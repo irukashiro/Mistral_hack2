@@ -22,6 +22,7 @@ from ai_service import (
     generate_hints,
     generate_human_relationships,
     generate_npc_defense,
+    generate_npc_night_reactions,
     generate_npc_speeches_for_player_message,
     generate_night_situation,
     generate_world_setting,
@@ -208,6 +209,17 @@ def _state_to_dict(
         "relationship_matrix": state.relationship_matrix if include_hidden else {},
         "debug_log": state.debug_log if include_hidden else [],
         "victory_reason": state.victory_reason,
+        "day_chat_count": state.day_chat_count,
+        "day_chat_max": 5,
+        "night_chat_log": [
+            {
+                "speaker_id": m.speaker_id,
+                "speaker_name": m.speaker_name,
+                "text": m.text,
+                "turn": m.turn,
+            }
+            for m in state.night_chat_log
+        ],
     }
 
 
@@ -446,6 +458,10 @@ async def chat(request: ChatRequest):
     if state.phase != "day":
         raise HTTPException(status_code=400, detail="昼フェーズでのみ発言できます")
 
+    # Check chat limit (max 5 per day phase)
+    if state.day_chat_count >= 5:
+        raise HTTPException(status_code=400, detail="本日の発言回数上限（5回）に達しました。投票フェーズへ進んでください。")
+
     # Add player message to history
     player = state.get_player(player_id)
     player_name = player.name if player else "プレイヤー"
@@ -498,6 +514,9 @@ async def chat(request: ChatRequest):
     except Exception:
         pass
 
+    # Increment day chat count
+    state.day_chat_count += 1
+
     return {
         "chat_history": [
             {
@@ -511,6 +530,8 @@ async def chat(request: ChatRequest):
         "npc_responses": npc_responses,
         "investigation_notes": state.investigation_notes,
         "amnesia_clues": state.amnesia_clues,
+        "day_chat_count": state.day_chat_count,
+        "day_chat_max": 5,
     }
 
 
@@ -776,6 +797,58 @@ async def pass_turn(request: PassRequest):
         state=_state_to_dict(state, request.player_id),
         npc_actions=npc_actions,
     )
+
+
+@app.post("/api/game/night-chat")
+async def night_chat(request: ChatRequest):
+    """Player sends a message during the night phase; 1-2 NPCs react briefly."""
+    game_id = request.game_id
+    player_id = request.player_id
+    message = request.message
+
+    state = game_store.get(game_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="ゲームが見つかりません")
+
+    if state.phase != "night":
+        raise HTTPException(status_code=400, detail="夜フェーズでのみ使用できます")
+
+    # Add player message to night chat log
+    player = state.get_player(player_id)
+    player_name = player.name if player else "プレイヤー"
+    state.night_chat_log.append(ChatMessage(
+        speaker_id=player_id,
+        speaker_name=player_name,
+        text=message,
+        turn=state.day_number,
+    ))
+
+    # Generate NPC reactions
+    try:
+        reactions = await generate_npc_night_reactions(state, message)
+    except Exception as e:
+        reactions = []
+
+    for r in reactions:
+        state.night_chat_log.append(ChatMessage(
+            speaker_id=r["npc_id"],
+            speaker_name=r["name"],
+            text=r["text"],
+            turn=state.day_number,
+        ))
+
+    return {
+        "reactions": reactions,
+        "night_chat_log": [
+            {
+                "speaker_id": m.speaker_id,
+                "speaker_name": m.speaker_name,
+                "text": m.text,
+                "turn": m.turn,
+            }
+            for m in state.night_chat_log
+        ],
+    }
 
 
 @app.post("/api/game/cheat-initiate")

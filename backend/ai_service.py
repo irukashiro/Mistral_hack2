@@ -59,17 +59,36 @@ def _log_api_call(
 # 1. Character generation
 # ─────────────────────────────────────────────
 
+_WORLD_GENRES = [
+    ("廃病院", "廃病院・旧病棟（例: 閉院した精神科病院の隔離棟）"),
+    ("山岳ロッジ", "山岳ロッジ・山荘（例: 北アルプス山麓の孤立した山小屋）"),
+    ("豪華客船", "豪華客船・クルーズ船（例: 太平洋横断中の大型客船の一等客室）"),
+    ("廃校", "廃校・旧学校（例: 廃校になった山間の全寮制高校の校舎）"),
+    ("地下施設", "地下施設・秘密基地（例: 旧軍の地下指令室を改装した施設）"),
+    ("タワーマンション最上階", "タワーマンション最上階（例: 東京湾岸の超高層タワーの最上階ペントハウス）"),
+    ("孤島リゾート", "孤島リゾート（例: 伊豆諸島の無人島に建てられたプライベートリゾート）"),
+    ("地下カジノ", "地下カジノ・賭博場（例: 歌舞伎町の雑居ビル地下に隠された高級賭博場）"),
+    ("研究施設", "研究施設・ラボ（例: 孤立した山中の極秘バイオ研究所）"),
+    ("廃テーマパーク", "廃テーマパーク（例: 閉園したまま20年放置された遊園地の管理棟）"),
+]
+
+
 async def generate_world_setting() -> dict:
     """Generate a rich shared world setting with a detailed incident narrative."""
     client = get_client()
-    prompt = """大富豪×人狼ゲームの共有ワールド設定を生成してください。
+    genre_key, genre_example = random.choice(_WORLD_GENRES)
+    prompt = f"""大富豪×人狼ゲームの共有ワールド設定を生成してください。
 全プレイヤーが関わってきた具体的な場所・事件・派閥を設定します。
 固有名詞（地名・施設名・事件名・人物名）を積極的に使い、臨場感のある設定にしてください。
 
+【今回の舞台ジャンル（必須）】: {genre_key}
+舞台の例: {genre_example}
+→ 必ずこのジャンルに合った設定にすること。「屋敷」「相続」「遺産争い」は絶対に使わないこと。
+
 JSON形式:
-{
-  "setting_name": "セッションタイトル（例: 廃館の遺産争奪戦）",
-  "location": "舞台の具体的な場所（例: 神奈川県逗子市の廃邸・鷹見荘）",
+{{
+  "setting_name": "セッションタイトル（{genre_key}に合ったもの）",
+  "location": "舞台の具体的な場所（{genre_example}のような表現で）",
   "context": "社会的背景（2文）",
   "key_events": [
     "全員が関わった過去の出来事1（具体的な固有名詞入り）",
@@ -77,12 +96,12 @@ JSON形式:
     "全員が関わった過去の出来事3"
   ],
   "factions": [
-    {"name": "派閥名", "description": "目的・特徴"},
-    {"name": "派閥名", "description": "目的・特徴"}
+    {{"name": "派閥名", "description": "目的・特徴"}},
+    {{"name": "派閥名", "description": "目的・特徴"}}
   ],
   "full_incident": "1000文字以上の詳細な事件描写。時系列で記述し、この場に集まった全員が何らかの形で関与している。具体的な日付・場所・動機・謀略・裏切りを含む完全な物語として書くこと。この事件の真相を知る者・隠す者・利用しようとする者が混在している。",
   "player_secret_backstory": "記憶を失ったプレイヤーの真の素性（3〜5文）。事件において重要な立場にあった人物だが、何らかの理由で記憶を失っている。固有名詞（地名・組織名・事件名）を含み、他の参加者の誰かと深い因縁がある設定にすること。"
-}"""
+}}"""
 
     response = client.chat.complete(
         model="mistral-large-latest",
@@ -763,6 +782,20 @@ async def decide_npc_play(
     }
 
     true_win_desc = npc.true_win.description if npc.true_win else "なし"
+
+    # Build special card context for rich reactions
+    special_card_hints = []
+    for play in valid_plays[:10]:
+        nums = [c.number for c in play if not c.is_joker]
+        has_joker = any(c.is_joker for c in play)
+        if has_joker:
+            special_card_hints.append("ジョーカーを出す場合: ミステリアスで不気味な発言をすること")
+        if nums and all(n == 2 for n in nums):
+            special_card_hints.append("「2」を出す場合: 強気・得意げ・余裕を見せる発言をすること")
+        if len(play) == 4:
+            special_card_hints.append("4枚（革命）を出す場合: 場がひっくり返る驚きや「これが真の力だ」的な発言をすること")
+    special_hint_block = "\n".join(dict.fromkeys(special_card_hints))  # dedupe
+
     context_prompt = f"""キャラクター: {npc.name}
 勝利条件: {npc.victory_condition.description}
 真の目標: {true_win_desc}
@@ -772,14 +805,16 @@ async def decide_npc_play(
 革命状態: {"あり" if state.revolution_active else "なし"}
 他プレイヤーの手札枚数: {alive_hand_counts}
 出せる手役（最大10個）: {valid_plays_display}
+{("特殊カード演出ガイド:\n" + special_hint_block) if special_hint_block else ""}
 
 上記を踏まえて、最も戦略的なプレイを選んでください。
+speechはカードプレイ時の雰囲気ある一言（40文字以内、口調: {npc.speech_style}）。
 JSON形式:
 {{
   "reasoning": "戦略的判断の理由（1文）",
   "action": "pass または play",
   "play_index": 0,
-  "speech": "カードプレイ時のひとこと（20文字以内、口調: {npc.speech_style}）"
+  "speech": "カードプレイ時のひとこと（40文字以内、口調: {npc.speech_style}）"
 }}"""
 
     client = get_client()
@@ -1170,6 +1205,63 @@ JSON:
             story="イカサマは失敗に終わりました。",
             judgment="draw",
         )
+
+
+async def generate_npc_night_reactions(
+    state: GameState,
+    player_message: str,
+    context: str = "",
+) -> List[Dict[str, Any]]:
+    """Generate short reactions from 1-2 random NPCs to a player's night chat message.
+    Returns list of {"npc_id", "name", "text"}.
+    """
+    alive_npcs = [
+        p for p in state.alive_players()
+        if not p.is_human and not p.is_hanged
+    ]
+    if not alive_npcs:
+        return []
+
+    # Pick 1-2 random NPCs to react
+    count = min(random.choice([1, 1, 2]), len(alive_npcs))
+    reactors = random.sample(alive_npcs, count)
+
+    client = get_client()
+
+    async def _react(npc: Character) -> Dict[str, Any]:
+        context_line = f"状況: {context}" if context else ""
+        prompt = f"""大富豪×人狼ゲームの夜フェーズ中、カードゲームのテーブルで{npc.name}がプレイヤーの発言に短く反応します。
+
+キャラクター: {npc.name}
+性格: {npc.personality}
+口調: {npc.speech_style}
+バックストーリー: {npc.backstory}
+{context_line}
+
+プレイヤーの発言: 「{player_message}」
+
+{npc.name}としてキャラクターらしく1文（20文字以内）で自然に反応してください。
+カードゲーム中の緊張感を保ちつつ、性格・口調を忠実に。
+JSON: {{"reaction": "反応の一言"}}"""
+
+        t0 = time.time()
+        response = client.chat.complete(
+            model="mistral-small-latest",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.75,
+        )
+        latency = int((time.time() - t0) * 1000)
+        try:
+            data = json.loads(response.choices[0].message.content)
+            text = data.get("reaction", "…")
+            _log_api_call(state, "night_reaction", "mistral-small", f"{npc.name} night reaction", text[:40], latency)
+            return {"npc_id": npc.id, "name": npc.name, "text": text}
+        except Exception:
+            return {"npc_id": npc.id, "name": npc.name, "text": "…"}
+
+    reactions = await asyncio.gather(*[_react(npc) for npc in reactors])
+    return list(reactions)
 
 
 async def process_all_npc_cheats(

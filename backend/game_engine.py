@@ -414,8 +414,8 @@ def transition_to_day(state: GameState) -> GameState:
     state.day_number += 1
     state.votes = {}
     state.hanged_today = None
-    # Deal new cards? No — in Daifugo cards persist. But for this game we re-deal each round
-    # Actually in this game design, we do NOT re-deal. Cards persist until players go out.
+    state.day_chat_count = 0  # 昼チャット回数リセット
+    state.night_chat_log = []  # 夜チャットログリセット
     state = update_all_character_states(state)
     return state
 

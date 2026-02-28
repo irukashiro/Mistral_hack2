@@ -273,6 +273,29 @@ function renderDayPhase() {
   renderInvestigationNotes();
   renderAmnesiaClues();
   updateIntroButton();
+  updateChatLimit();
+}
+
+function updateChatLimit() {
+  const count = (gameState && gameState.day_chat_count) || 0;
+  const max = (gameState && gameState.day_chat_max) || 5;
+  const remaining = Math.max(0, max - count);
+  const el = $('chat-remaining');
+  if (el) el.textContent = remaining;
+
+  const input = $('chat-input');
+  const btn = $('chat-send-btn');
+  const limitInfo = $('chat-limit-info');
+
+  if (remaining <= 0) {
+    if (input) { input.disabled = true; input.placeholder = '発言回数の上限に達しました'; }
+    if (btn) btn.disabled = true;
+    if (limitInfo) limitInfo.classList.add('limit-reached');
+  } else {
+    if (input) { input.disabled = false; input.placeholder = '発言する...'; }
+    if (btn) btn.disabled = false;
+    if (limitInfo) limitInfo.classList.remove('limit-reached');
+  }
 }
 
 function updateIntroButton() {
@@ -388,6 +411,14 @@ async function sendChat() {
   const msg = $('chat-input').value.trim();
   if (!msg) return;
 
+  // Check client-side limit before sending
+  const count = (gameState && gameState.day_chat_count) || 0;
+  const max = (gameState && gameState.day_chat_max) || 5;
+  if (count >= max) {
+    updateChatLimit();
+    return;
+  }
+
   $('chat-input').value = '';
   $('chat-send-btn').disabled = true;
 
@@ -397,6 +428,14 @@ async function sendChat() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ game_id: gameId, player_id: playerId, message: msg }),
     });
+    if (!res.ok) {
+      const err = await res.json();
+      if (res.status === 400 && err.detail && err.detail.includes('上限')) {
+        if (gameState) gameState.day_chat_count = max;
+        updateChatLimit();
+      }
+      return;
+    }
     const data = await res.json();
     gameState.chat_history = data.chat_history;
     // Store baton info from latest NPC responses
@@ -423,6 +462,12 @@ async function sendChat() {
         $('amnesia-list').classList.remove('hidden');  // auto-open on new clue
       }
     }
+    // Update chat count
+    if (data.day_chat_count !== undefined) {
+      gameState.day_chat_count = data.day_chat_count;
+      gameState.day_chat_max = data.day_chat_max || 5;
+    }
+    updateChatLimit();
     renderChatLog();
   } catch (e) {
     console.error(e);
@@ -511,7 +556,29 @@ async function finalizeVote() {
     gameState = data.state;
 
     if (data.hanged_player) {
-      alert(`${data.hanged_player.name}が処刑されました。\n役職: ${roleLabel(data.hanged_player.role)}\n勝利条件: ${data.hanged_player.victory_condition}`);
+      const isMe = data.hanged_player.id === playerId;
+      if (isMe) {
+        // Ghost mode notification for human player
+        await new Promise(resolve => {
+          const modal = document.createElement('div');
+          modal.className = 'ghost-notification-overlay';
+          modal.innerHTML = `
+            <div class="ghost-notification-box">
+              <div class="ghost-notification-icon">💀</div>
+              <h3 class="ghost-notification-title">あなたは吊られました</h3>
+              <p class="ghost-notification-body">しかしゲームは続きます。<br>ゴーストとして観戦してください…<br><br>すべての真実があなたの目に映る。</p>
+              <button class="btn-primary ghost-notification-ok">観戦を続ける</button>
+            </div>
+          `;
+          document.body.appendChild(modal);
+          modal.querySelector('.ghost-notification-ok').addEventListener('click', () => {
+            modal.remove();
+            resolve();
+          });
+        });
+      } else {
+        alert(`${data.hanged_player.name}が処刑されました。\n役職: ${roleLabel(data.hanged_player.role)}\n勝利条件: ${data.hanged_player.victory_condition}`);
+      }
     }
 
     // Show night situation banner
@@ -570,6 +637,7 @@ function renderNightPhase() {
   updateTurnIndicator();
   renderNightLog();
   renderHangedPanel();
+  renderNightChatTemplates();
   // Update clear counter
   const clearCount = $('clear-count');
   if (clearCount) clearCount.textContent = gameState.table_clear_count || 0;
@@ -696,6 +764,68 @@ function renderHangedPanel() {
     }
     container.appendChild(div);
   });
+}
+
+// ─── Night Chat ──────────────────────────────────────────────
+const NIGHT_CHAT_TEMPLATES = [
+  { label: 'いい手だ', msg: 'いい手だ…' },
+  { label: '次は覚悟しろ', msg: '次は覚悟しろ' },
+  { label: 'なんだそれは！', msg: 'なんだそれは！' },
+  { label: 'ふん、まだまだ', msg: 'ふん、まだまだだ' },
+  { label: '静かにしろ', msg: '…静かにしろ' },
+];
+
+function renderNightChatTemplates() {
+  const container = $('night-chat-templates');
+  if (!container) return;
+  container.innerHTML = '';
+  NIGHT_CHAT_TEMPLATES.forEach(t => {
+    const btn = document.createElement('button');
+    btn.className = 'night-template-btn';
+    btn.textContent = t.label;
+    btn.addEventListener('click', () => {
+      $('night-chat-input').value = t.msg;
+      sendNightChat();
+    });
+    container.appendChild(btn);
+  });
+}
+
+$('night-chat-send-btn').addEventListener('click', sendNightChat);
+$('night-chat-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendNightChat(); });
+
+async function sendNightChat() {
+  const input = $('night-chat-input');
+  const msg = input.value.trim();
+  if (!msg || !gameId) return;
+
+  input.value = '';
+  $('night-chat-send-btn').disabled = true;
+
+  // Add to local night log immediately
+  const me = gameState.players.find(p => p.id === playerId);
+  nightLog.push({ type: 'night-chat-player', text: `${me ? me.name : 'あなた'}:「${msg}」` });
+  renderNightLog();
+
+  try {
+    const res = await fetch(`${API}/api/game/night-chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ game_id: gameId, player_id: playerId, message: msg }),
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.reactions && data.reactions.length > 0) {
+      data.reactions.forEach(r => {
+        nightLog.push({ type: 'night-chat-npc', text: `${r.name}:「${r.text}」` });
+      });
+      renderNightLog();
+    }
+  } catch (e) {
+    console.error(e);
+  } finally {
+    $('night-chat-send-btn').disabled = false;
+  }
 }
 
 // Night actions

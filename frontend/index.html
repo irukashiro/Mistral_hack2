@@ -86,6 +86,7 @@
               <input type="text" id="chat-input" placeholder="発言する..." maxlength="200" />
               <button id="chat-send-btn" class="btn-secondary">送信</button>
             </div>
+            <div id="chat-limit-info" class="chat-limit-info">残り <span id="chat-remaining">5</span> 回</div>
             <button id="intro-btn" class="btn-intro hidden">🎭 みんな、自己紹介してください</button>
             <button id="hints-toggle-btn" class="btn-secondary hints-toggle-btn">💡 ヒント表示</button>
             <div id="hints-panel" class="hints-panel hidden">
@@ -201,6 +202,15 @@
               <button id="pass-btn" class="btn-secondary">パス</button>
             </div>
             <div id="night-log" class="night-log"></div>
+
+            <!-- Night Phase Chat (player can speak; NPCs react) -->
+            <div id="night-chat-area" class="night-chat-area">
+              <div class="night-chat-templates" id="night-chat-templates"></div>
+              <div class="night-chat-input-row">
+                <input id="night-chat-input" placeholder="ひとこと..." maxlength="60" />
+                <button id="night-chat-send-btn" class="btn-secondary">送信</button>
+              </div>
+            </div>
           </section>
 
           <!-- Right: Hanged player info -->

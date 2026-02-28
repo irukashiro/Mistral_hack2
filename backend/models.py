@@ -202,6 +202,8 @@ class GameState(BaseModel):
     relationship_matrix: Dict[str, Dict[str, int]] = Field(default_factory=dict)  # N×N 関係性マトリクス
     debug_log: List[dict] = Field(default_factory=list)  # AI判断理由ログ
     victory_reason: str = ""  # 勝利理由テキスト
+    day_chat_count: int = 0  # 昼フェーズの発言回数（上限5回）
+    night_chat_log: List[ChatMessage] = Field(default_factory=list)  # 夜フェーズのチャットログ
 
     def get_player(self, player_id: str) -> Optional[Character]:
         for p in self.players:
