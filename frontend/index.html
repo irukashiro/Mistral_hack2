@@ -15,13 +15,31 @@
       <div class="setup-form">
         <label for="player-name">あなたの名前</label>
         <input type="text" id="player-name" placeholder="名前を入力..." maxlength="20" value="プレイヤー" />
-        <label for="npc-count">NPC人数</label>
-        <select id="npc-count">
-          <option value="3">3人</option>
-          <option value="4" selected>4人</option>
-          <option value="5">5人</option>
-          <option value="6">6人</option>
-        </select>
+        <!-- Mode Selection -->
+        <div class="mode-selector">
+          <div class="mode-card mode-lite active" id="mode-lite-card" onclick="selectMode('lite')">
+            <div class="mode-icon">⚡</div>
+            <div class="mode-name">Liteモード</div>
+            <div class="mode-desc">5人固定・軽量設定<br>陽動イカサマ・Hateシステム</div>
+          </div>
+          <div class="mode-card mode-hard" id="mode-hard-card" onclick="selectMode('hard')">
+            <div class="mode-icon">🕯️</div>
+            <div class="mode-name">Hardモード</div>
+            <div class="mode-desc">複雑な世界設定・事件<br>記憶喪失・因縁ドラマ</div>
+          </div>
+        </div>
+        <input type="hidden" id="game-mode" value="lite" />
+
+        <!-- Hard mode only: NPC count -->
+        <div id="npc-count-row" class="hidden">
+          <label for="npc-count">NPC人数</label>
+          <select id="npc-count">
+            <option value="3">3人</option>
+            <option value="4" selected>4人</option>
+            <option value="5">5人</option>
+            <option value="6">6人</option>
+          </select>
+        </div>
         <button id="start-btn" class="btn-primary">ゲーム開始</button>
         <p id="setup-error" class="error-msg hidden"></p>
       </div>
@@ -167,6 +185,62 @@
             <p id="cheat-result-reveal" class="cheat-reveal hidden"></p>
             <div class="cheat-actions">
               <button id="cheat-result-ok" class="btn-primary">続ける</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== LITE MODE CHEAT PANELS ===== -->
+
+        <!-- Lite: Cheater inputs Decoy + Real -->
+        <div id="lite-cheat-decoy-panel" class="cheat-overlay hidden">
+          <div class="cheat-box lite-cheat-box">
+            <h3 class="cheat-title">🎭 陽動イカサマ</h3>
+            <p class="cheat-desc">あなたは貧民です。陽動と本命を別々に入力してください。相手には陽動のみが表示されます。</p>
+            <label class="cheat-label">ターゲット</label>
+            <select id="lite-cheat-target" class="cheat-select"></select>
+            <div class="lite-cheat-inputs">
+              <div class="lite-cheat-field">
+                <label class="cheat-label">【陽動】相手の注意を引くアクション</label>
+                <textarea id="lite-decoy-text" class="cheat-textarea" placeholder="例：「うわっ、虫！」と叫びながら天井を指さす" rows="2" maxlength="100"></textarea>
+              </div>
+              <div class="lite-cheat-field">
+                <label class="cheat-label">【本命】実際にカードを奪うアクション</label>
+                <textarea id="lite-real-text" class="cheat-textarea" placeholder="例：相手が上を向いた隙に右端のカードを素早く抜く" rows="2" maxlength="100"></textarea>
+              </div>
+            </div>
+            <div class="cheat-actions">
+              <button id="lite-cheat-submit-btn" class="btn-primary">陽動を仕掛ける！</button>
+              <button id="lite-cheat-skip-btn" class="btn-secondary">今回はやめる</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Lite: Defender reacts to Decoy (15-char, 5-sec timer) -->
+        <div id="lite-cheat-react-panel" class="cheat-overlay hidden">
+          <div class="cheat-box lite-react-box">
+            <h3 class="cheat-title lite-react-title">⚡ 突然の出来事！</h3>
+            <div id="lite-decoy-display" class="lite-decoy-display"></div>
+            <div class="lite-react-timer-row">
+              <span class="lite-react-timer-label">残り</span>
+              <span id="lite-react-timer" class="lite-react-timer">5</span>
+              <span class="lite-react-timer-label">秒</span>
+            </div>
+            <p class="cheat-desc lite-react-hint">どうする？（15文字以内で素早く入力！）</p>
+            <input id="lite-react-input" class="lite-react-input" placeholder="例：上を見る、手元を守る…" maxlength="15" />
+            <div class="cheat-actions">
+              <button id="lite-react-submit-btn" class="btn-primary">リアクション！</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Lite: Cheat Result -->
+        <div id="lite-cheat-result-panel" class="cheat-overlay hidden">
+          <div class="cheat-box">
+            <h3 id="lite-cheat-result-title" class="cheat-title"></h3>
+            <p id="lite-cheat-result-story" class="cheat-story"></p>
+            <p id="lite-cheat-result-reveal" class="cheat-reveal hidden"></p>
+            <div class="cheat-actions">
+              <button id="lite-cheat-result-ok" class="btn-primary">続ける</button>
             </div>
           </div>
         </div>

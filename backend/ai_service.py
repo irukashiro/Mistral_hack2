@@ -1320,3 +1320,459 @@ async def process_all_npc_cheats(
             })
 
     return state, pending_cheat, resolved_effects
+
+
+# ═══════════════════════════════════════════════════════
+#   LITE MODE FUNCTIONS
+#   軽量版: キャラ生成・伏線会話・Hate投票・陽動イカサマ
+# ═══════════════════════════════════════════════════════
+
+from models import LitePendingDecoy  # noqa: E402 (local import to avoid circular at top)
+
+
+async def generate_lite_characters(
+    npc_count: int,
+    player_name: str = "プレイヤー",
+) -> List[Character]:
+    """
+    Lite mode: generate lightweight NPC characters.
+    Each NPC has: occupation, personality, 1 acquaintance, argument_style.
+    Backstory is short (1-2 sentences). No world setting, no amnesia.
+    Role distribution: 1 FUGO, 1 HINMIN, rest HEIMIN.
+    """
+    client = get_client()
+
+    # Build role assignments — fixed: 1 fugo, 1 hinmin, rest heimin
+    roles: List[Role] = [Role.FUGO, Role.HINMIN]
+    while len(roles) < npc_count:
+        roles.append(Role.HEIMIN)
+    random.shuffle(roles)
+
+    role_assignments = ", ".join([f"npc_{i+1:02d}: {r.value}" for i, r in enumerate(roles)])
+
+    prompt = f"""大富豪×人狼ゲームのNPCキャラクターを{npc_count}人生成してください。
+
+ゲーム構図: 【平民3名 vs 富豪1名 vs 貧民1名】の5人ゲーム。
+- 富豪: 平民のフリをして潜伏し、貧民への疑惑を煽る
+- 貧民: 平民のフリをして潜伏し、富豪への疑惑を煽る
+- 平民: 富豪と貧民を両方排除することが目的
+
+各キャラクターを簡潔に生成してください（認知負荷を下げるため軽量な設定にすること）:
+- id: "npc_01" 〜 "npc_{npc_count:02d}"
+- name: 日本語の名前（姓名）
+- occupation: 職業（例: 会社員、学生、料理人）
+- personality: 性格（1文）
+- speech_style: 話し方の特徴（〜だぜ、〜ですわ など）
+- argument_style: "慎重派"/"扇動者"/"論理派"/"便乗派"/"狂信者" のいずれか
+- acquaintance_id: 「顔見知り」のNPC ID（1つだけ、自分以外）
+- acquaintance_desc: 顔見知りの関係説明（1文、具体的なエピソード）
+
+ロール割り当て（この通りに設定すること）: {role_assignments}
+
+JSON形式で返してください:
+{{
+  "characters": [
+    {{
+      "id": "npc_01",
+      "name": "山田太郎",
+      "occupation": "会社員",
+      "personality": "口数は少ないが観察力が鋭い",
+      "speech_style": "…そうですね",
+      "argument_style": "慎重派",
+      "acquaintance_id": "npc_02",
+      "acquaintance_desc": "同じ職場の同僚で、昼食をよく共にする",
+      "role": "heimin"
+    }}
+  ]
+}}"""
+
+    t0 = time.time()
+    response = client.chat.complete(
+        model="mistral-small-latest",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.9,
+    )
+    latency = int((time.time() - t0) * 1000)
+
+    content = response.choices[0].message.content
+    data = json.loads(content)
+    characters_data = data.get("characters", [])
+
+    characters = []
+    for i, char_data in enumerate(characters_data):
+        role_val = char_data.get("role", "heimin")
+        try:
+            role = Role(role_val)
+        except ValueError:
+            role = roles[i] if i < len(roles) else Role.HEIMIN
+
+        occupation = char_data.get("occupation", "会社員")
+        personality = char_data.get("personality", "普通の人物")
+        backstory = f"{occupation}。{personality}"
+
+        acquaintance_id = char_data.get("acquaintance_id", "")
+        acquaintance_desc = char_data.get("acquaintance_desc", "顔見知り")
+        relationships = []
+        if acquaintance_id:
+            relationships.append(Relationship(
+                target_id=acquaintance_id,
+                description=acquaintance_desc,
+            ))
+
+        valid_styles = {"慎重派", "扇動者", "論理派", "便乗派", "狂信者"}
+        arg_style = char_data.get("argument_style", "")
+        if arg_style not in valid_styles:
+            arg_style = random.choice(list(valid_styles))
+
+        # Lite mode: simple victory conditions based on role
+        if role == Role.FUGO:
+            vc = VictoryCondition(
+                type="first_out",
+                description="大富豪パートで手札を2枚以下に減らす（誰かが上がる前に）",
+            )
+        elif role == Role.HINMIN:
+            vc = VictoryCondition(
+                type="revolution",
+                description="富豪より先に上がる、または2・ジョーカーを場に出す",
+            )
+        else:
+            vc = VictoryCondition(
+                type="first_out",
+                description="富豪と貧民を両方排除して生き残る",
+            )
+
+        character = Character(
+            id=char_data.get("id", f"npc_{i+1:02d}"),
+            name=char_data.get("name", f"NPC{i+1}"),
+            role=role,
+            backstory=backstory,
+            personality=personality,
+            speech_style=char_data.get("speech_style", ""),
+            relationships=relationships,
+            victory_condition=vc,
+            argument_style=arg_style,
+            is_human=False,
+        )
+        characters.append(character)
+
+    return characters
+
+
+async def generate_lite_npc_speeches(
+    state: "GameState",
+    player_message: str,
+) -> List[Dict[str, Any]]:
+    """
+    Lite mode: generate NPC responses with role-based foreshadowing.
+    Each NPC subtly hints at their hidden identity through speech.
+    Returns list of {"npc_id", "name", "text", "foreshadowing", "reasoning"}.
+    """
+    npcs = [p for p in state.alive_players() if not p.is_human and not p.is_hanged]
+
+    # Build card play evidence log (what each player has played)
+    card_evidence = []
+    for p in state.players:
+        if p.cards_played_history:
+            all_played = [c for hand in p.cards_played_history for c in hand]
+            strong_cards = [c for c in all_played if c.strength >= 14 or c.is_joker]  # 2 or Joker
+            if strong_cards:
+                card_evidence.append(f"{p.name}: 強いカード（{', '.join(c.display() for c in strong_cards)}）を出した")
+    card_evidence_str = "\n".join(card_evidence) if card_evidence else "まだカード証拠なし"
+
+    # Cheat exposure log
+    cheat_traces = []
+    for entry in state.cheat_log:
+        if entry.judgment == "big_fail":
+            p = state.get_player(entry.cheater_id)
+            if p:
+                cheat_traces.append(f"{p.name}: イカサマが露見した")
+    cheat_str = "\n".join(cheat_traces) if cheat_traces else "なし"
+
+    client = get_client()
+
+    async def _gen(npc: Character) -> Dict[str, Any]:
+        role_strategy = {
+            Role.FUGO: "あなたは富豪です。平民のフリをしながら、貧民への疑惑を自然に煽ってください。カードを強く出しすぎた事実を別の話題でごまかしてもよい。",
+            Role.HINMIN: "あなたは貧民です。平民のフリをしながら、富豪への疑惑を自然に煽ってください。強いカードを出している人物が危険だと匂わせてもよい。",
+            Role.HEIMIN: "あなたは平民です。カードゲームの証拠と会議の発言を元に、富豪か貧民を探し出してください。",
+        }
+        strategy = role_strategy.get(npc.role, "")
+
+        # Foreshadowing guide by role
+        foreshadowing_guide = {
+            Role.FUGO: (
+                "自分が強いカードを持っている・出したことを遠回しに正当化する言葉を1つ含める。"
+                "例: 「たまたまいいカードが来ちゃいましたね」「強いカードも出し時を考えないとですよね」"
+            ),
+            Role.HINMIN: (
+                "強いカードを出した人物への疑惑を自然に植え付ける言葉を1つ含める。"
+                "例: 「あんなカードを持ってるってちょっと怪しくないですか？」「誰かが裏でズルをしてる気がします」"
+            ),
+            Role.HEIMIN: (
+                "カードゲームの事実に基づいた中立的な観察を述べる。"
+                "例: 「Aさん、強いカード多かったですね」「誰かイカサマしてないかな…」"
+            ),
+        }
+        foreshadow = foreshadowing_guide.get(npc.role, "")
+
+        recent_chat = state.chat_history[-5:] if len(state.chat_history) > 5 else state.chat_history
+        chat_summary = "\n".join([f"{m.speaker_name}: {m.text}" for m in recent_chat])
+
+        prompt = f"""大富豪×人狼ゲームのNPCとして発言してください。
+
+キャラクター: {npc.name}
+職業・性格: {npc.personality}
+口調: {npc.speech_style}
+議論スタイル: {npc.argument_style}
+
+【秘密の役割と戦略】
+{strategy}
+
+【伏線ガイド（必ず1つ自然に含めること）】
+{foreshadow}
+
+カードゲームの証拠（昨夜の大富豪結果）:
+{card_evidence_str}
+
+イカサマ露見記録:
+{cheat_str}
+
+最近の会話:
+{chat_summary}
+
+プレイヤーの発言: 「{player_message}」
+
+上記を踏まえて{npc.name}として発言してください（1〜2文）。
+伏線を自然に含めること。役割は絶対に明かさないこと。
+
+JSON形式:
+{{
+  "reasoning": "内部戦略メモ（表示されない）",
+  "speech": "発言内容（キャラクター口調）",
+  "foreshadowing": "この発言に含まれた伏線の説明（1文、ゲームマスター向け）"
+}}"""
+
+        t0 = time.time()
+        response = client.chat.complete(
+            model="mistral-small-latest",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.85,
+        )
+        latency = int((time.time() - t0) * 1000)
+
+        try:
+            d = json.loads(response.choices[0].message.content)
+            return {
+                "npc_id": npc.id,
+                "name": npc.name,
+                "text": d.get("speech", "…"),
+                "foreshadowing": d.get("foreshadowing", ""),
+                "reasoning": d.get("reasoning", ""),
+            }
+        except Exception:
+            return {"npc_id": npc.id, "name": npc.name, "text": "…", "foreshadowing": "", "reasoning": ""}
+
+    responses = await asyncio.gather(*[_gen(npc) for npc in npcs])
+    return list(responses)
+
+
+async def decide_npc_lite_vote(
+    npc: Character,
+    state: "GameState",
+) -> Tuple[Optional[str], str]:
+    """
+    Lite mode hate system: NPC votes based on card evidence + cheat traces + meeting behavior.
+    FUGO wants to point at HINMIN. HINMIN wants to point at FUGO.
+    HEIMIN wants to eliminate whoever looks most suspicious.
+    """
+    if npc.is_hanged:
+        return None, ""
+
+    candidates = [p for p in state.alive_players() if p.id != npc.id]
+    if not candidates:
+        return None, ""
+
+    # Build card evidence
+    card_evidence = []
+    for p in candidates:
+        if p.cards_played_history:
+            all_played = [c for hand in p.cards_played_history for c in hand]
+            strong = [c for c in all_played if c.strength >= 14 or c.is_joker]
+            if strong:
+                card_evidence.append({
+                    "id": p.id,
+                    "name": p.name,
+                    "strong_cards_played": [c.display() for c in strong],
+                    "hand_count": p.hand_count(),
+                })
+            else:
+                card_evidence.append({
+                    "id": p.id,
+                    "name": p.name,
+                    "strong_cards_played": [],
+                    "hand_count": p.hand_count(),
+                })
+
+    cheat_exposed = [
+        state.get_player(e.cheater_id).name
+        for e in state.cheat_log
+        if e.judgment == "big_fail" and state.get_player(e.cheater_id)
+    ]
+
+    recent_chat = state.chat_history[-8:] if len(state.chat_history) > 8 else state.chat_history
+    chat_summary = "\n".join([f"{m.speaker_name}: {m.text}" for m in recent_chat])
+
+    role_vote_bias = {
+        Role.FUGO: "あなたは富豪です。貧民への疑惑が高まるように投票してください。強いカードを出していない・弱そうな人ではなく、「イカサマをしそう」「怪しい動きをした」人を狙ってください。",
+        Role.HINMIN: "あなたは貧民です。富豪（強いカードを多く出している人物）への疑惑が高まるように投票してください。",
+        Role.HEIMIN: "あなたは平民です。カードゲームで強すぎた人物（富豪候補）またはイカサマの痕跡がある人物（貧民候補）の危険な方に投票してください。",
+    }
+    bias = role_vote_bias.get(npc.role, "")
+
+    prompt = f"""大富豪×人狼の投票フェーズです。
+
+キャラクター: {npc.name}（{npc.personality}）
+【役割と投票戦略】: {bias}
+
+カードゲームの証拠:
+{json.dumps(card_evidence, ensure_ascii=False, indent=2)}
+
+イカサマ露見者: {cheat_exposed if cheat_exposed else "なし"}
+
+会議での発言:
+{chat_summary}
+
+上記から最も怪しい人物を1人選び投票してください。
+reasoning: 投票理由を「○○さんは△△という証拠があるから」という形で具体的に（30〜60文字）
+JSON: {{"reasoning": "...", "target_id": "npc_xx or player_human"}}"""
+
+    client = get_client()
+    t0 = time.time()
+    response = client.chat.complete(
+        model="mistral-small-latest",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.8,
+    )
+    latency = int((time.time() - t0) * 1000)
+
+    try:
+        d = json.loads(response.choices[0].message.content)
+        target_id = d.get("target_id")
+        reasoning = d.get("reasoning", "")
+        valid_ids = [p.id for p in candidates]
+        if target_id not in valid_ids:
+            target_id = random.choice(valid_ids)
+        _log_api_call(state, "lite_vote", "mistral-small", f"{npc.name} hate vote", target_id, latency)
+        return target_id, reasoning
+    except Exception:
+        return random.choice([p.id for p in candidates]), ""
+
+
+async def judge_lite_cheat_decoy(
+    cheater: Character,
+    target: Character,
+    decoy_text: str,
+    real_text: str,
+    reaction: str,
+    state: "GameState",
+) -> CheatEffect:
+    """
+    Lite mode decoy cheat judge.
+    Active-side (cheater) is heavily favored.
+
+    Rules:
+    - If reaction falls for decoy (mentions the decoy action) → big_success, undetected
+    - If reaction guards the real action specifically → quiet draw (fails, undetected)
+    - If reaction involves physical restraint/seizure → big_fail (exposed)
+    - Empty/time-expired reaction → big_success (auto)
+    """
+    situation = state.night_situation or "カードゲームのテーブルの周囲"
+    reaction_trimmed = reaction.strip()[:15]  # enforce 15-char limit
+
+    prompt = f"""大富豪×人狼ゲーム「Liteモード」のイカサマ審判をしてください。
+
+【ゲームのルール】
+貧民（仕掛け人）は圧倒的に有利です。
+
+仕掛け人: {cheater.name}（貧民）
+ターゲット: {target.name}
+状況: {situation}
+
+--- 仕掛け人の戦略 ---
+【陽動】: {decoy_text}
+【本命】: {real_text}
+
+--- ターゲットの反応（最大15文字） ---
+「{reaction_trimmed}」{" ← 空（時間切れ）" if not reaction_trimmed else ""}
+
+【審判基準（必ずこの順番で適用）】
+1. 反応が空・時間切れ → 判定: big_success（カード強奪成功、バレない）
+2. 反応に「陽動」に引きずられた言葉（{decoy_text[:15]}に関連する動作）が含まれる → 判定: big_success（カード強奪成功、バレない）
+3. 反応に「本命」({real_text[:15]}に関連する防御）が具体的に書かれている → 判定: draw（失敗、バレない）
+4. 反応に「つかむ」「つかまえる」「押さえる」「制圧」など身体的接触・拘束がある → 判定: big_fail（失敗＋露見）
+5. それ以外 → 判定: big_success（陽動成功とみなす）
+
+ゲーム効果:
+- big_success → effect_type: steal_card（カード1枚強奪）、バレない
+- draw → effect_type: no_effect（失敗）、バレない
+- big_fail → effect_type: no_effect（失敗）、正体露見
+
+JSON:
+{{
+  "judgment": "big_success/draw/big_fail",
+  "effect_type": "steal_card or no_effect",
+  "card_index": 0,
+  "story": "臨場感ある結果描写（2〜3文、陽動と本命の対比を描写。バレた場合はその様子も）"
+}}"""
+
+    client = get_client()
+    t0 = time.time()
+    response = client.chat.complete(
+        model="mistral-small-latest",
+        messages=[
+            {"role": "system", "content": "あなたはゲームマスターです。指定された審判基準を厳密に適用してください。JSON形式で返答してください。"},
+            {"role": "user", "content": prompt},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.7,
+    )
+    latency = int((time.time() - t0) * 1000)
+
+    try:
+        d = json.loads(response.choices[0].message.content)
+        judgment = d.get("judgment", "big_success")
+        if judgment not in ("big_success", "draw", "big_fail"):
+            judgment = "big_success"
+
+        effect_type_str = d.get("effect_type", "steal_card")
+        if judgment in ("draw", "big_fail"):
+            effect_type = CheatEffectType.NO_EFFECT
+        else:
+            try:
+                effect_type = CheatEffectType(effect_type_str)
+            except ValueError:
+                effect_type = CheatEffectType.STEAL_CARD
+
+        _log_api_call(state, "lite_cheat_decoy", "mistral-small",
+                      f"{cheater.name}→{target.name} decoy", judgment, latency)
+        return CheatEffect(
+            type=effect_type,
+            cheater_id=cheater.id,
+            target_id=target.id,
+            card_index=d.get("card_index", 0),
+            story=d.get("story", "イカサマ対決が決着しました。"),
+            judgment=judgment,
+        )
+    except Exception:
+        # Fallback: cheater wins (active-side advantage)
+        return CheatEffect(
+            type=CheatEffectType.STEAL_CARD,
+            cheater_id=cheater.id,
+            target_id=target.id,
+            card_index=0,
+            story="陽動が見事に決まり、仕掛け人はターゲットのカードを素早く奪い取った。",
+            judgment="big_success",
+        )

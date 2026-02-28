@@ -8,12 +8,14 @@ const API = '';  // same origin
 let gameId = null;
 let playerId = 'player_human';
 let gameState = null;
+let gameMode = 'lite';  // 'lite' or 'hard'
 let selectedCards = new Set();  // indices in hand
 let myVoteTarget = null;
 let godEyeMode = localStorage.getItem('godEyeMode') === 'true';
 let hintsVisible = false;
 let ghostAdvanceTimer = null;
 let introUsed = false;
+let liteReactTimer = null;  // countdown timer for lite cheat react
 
 // ─── localStorage persistence ────────────────────────────────
 function saveGameToStorage() {
@@ -53,6 +55,7 @@ async function tryRestoreGame() {
     gameId = data.gameId;
     playerId = data.playerId;
     gameState = serverState;
+    gameMode = serverState.game_mode || 'hard';
     showScreen('game');
     renderAll();
     return true;
@@ -146,22 +149,40 @@ function toggleCard(index, el) {
 $('start-btn').addEventListener('click', startGame);
 $('player-name').addEventListener('keydown', e => { if (e.key === 'Enter') startGame(); });
 
+// Mode selection
+function selectMode(mode) {
+  gameMode = mode;
+  $('game-mode').value = mode;
+  $('mode-lite-card').classList.toggle('active', mode === 'lite');
+  $('mode-hard-card').classList.toggle('active', mode === 'hard');
+  const npcRow = $('npc-count-row');
+  if (mode === 'hard') {
+    npcRow.classList.remove('hidden');
+  } else {
+    npcRow.classList.add('hidden');
+  }
+}
+
 // Auto-restore from localStorage on page load
 tryRestoreGame();
 
 async function startGame() {
   const playerName = $('player-name').value.trim() || 'プレイヤー';
   const npcCount = parseInt($('npc-count').value, 10);
+  const mode = $('game-mode').value || 'lite';
+  gameMode = mode;
 
   $('loading-overlay').classList.remove('hidden');
   $('start-btn').disabled = true;
   $('setup-error').classList.add('hidden');
 
+  const endpoint = mode === 'lite' ? '/api/game/start-lite' : '/api/game/start';
+
   try {
-    const res = await fetch(`${API}/api/game/start`, {
+    const res = await fetch(`${API}${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ npc_count: npcCount, player_name: playerName }),
+      body: JSON.stringify({ npc_count: npcCount, player_name: playerName, game_mode: mode }),
     });
 
     if (!res.ok) {
@@ -270,8 +291,21 @@ function renderDayPhase() {
   renderPlayersList();
   renderChatLog();
   renderVoteList();
-  renderInvestigationNotes();
-  renderAmnesiaClues();
+
+  // Lite mode: hide hard-mode-only panels
+  const isLite = gameState && gameState.game_mode === 'lite';
+  const notesPanel = $('notes-panel');
+  const amnesiaPanel = $('amnesia-panel');
+  const hintsToggle = $('hints-toggle-btn');
+  if (notesPanel) notesPanel.style.display = isLite ? 'none' : '';
+  if (amnesiaPanel) amnesiaPanel.style.display = isLite ? 'none' : '';
+  if (hintsToggle) hintsToggle.style.display = isLite ? 'none' : '';
+
+  if (!isLite) {
+    renderInvestigationNotes();
+    renderAmnesiaClues();
+  }
+
   updateIntroButton();
   updateChatLimit();
 }
@@ -422,8 +456,12 @@ async function sendChat() {
   $('chat-input').value = '';
   $('chat-send-btn').disabled = true;
 
+  const chatEndpoint = (gameState && gameState.game_mode === 'lite')
+    ? `${API}/api/game/lite/chat`
+    : `${API}/api/game/chat`;
+
   try {
-    const res = await fetch(`${API}/api/game/chat`, {
+    const res = await fetch(chatEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ game_id: gameId, player_id: playerId, message: msg }),
@@ -438,8 +476,9 @@ async function sendChat() {
     }
     const data = await res.json();
     gameState.chat_history = data.chat_history;
-    // Store baton info from latest NPC responses
-    if (data.npc_responses) {
+
+    // Hard mode: baton info
+    if (data.npc_responses && gameState.game_mode !== 'lite') {
       data.npc_responses.forEach(r => {
         if (r.baton_target_id) {
           lastBatonMap[r.npc_id] = { baton_target_id: r.baton_target_id, baton_action: r.baton_action };
@@ -448,12 +487,22 @@ async function sendChat() {
         }
       });
     }
-    // Update investigation notes
+
+    // Lite mode: foreshadowing hints (store for later debug display)
+    if (data.npc_responses && gameState.game_mode === 'lite') {
+      data.npc_responses.forEach(r => {
+        if (r.foreshadowing) {
+          // Mark message in chat with foreshadowing badge (stored in debug_log via backend)
+        }
+      });
+    }
+
+    // Update investigation notes (hard mode)
     if (data.investigation_notes) {
       gameState.investigation_notes = data.investigation_notes;
       renderInvestigationNotes();
     }
-    // Update amnesia clues — auto-expand panel on first new clue
+    // Update amnesia clues — auto-expand panel on first new clue (hard mode)
     if (data.amnesia_clues) {
       const prevCount = (gameState.amnesia_clues || []).length;
       gameState.amnesia_clues = data.amnesia_clues;
@@ -496,8 +545,11 @@ async function castVote(targetId) {
 $('collect-votes-btn').addEventListener('click', collectNpcVotes);
 async function collectNpcVotes() {
   $('collect-votes-btn').disabled = true;
+  const voteEndpoint = (gameState && gameState.game_mode === 'lite')
+    ? `${API}/api/game/lite/npc-votes`
+    : `${API}/api/game/npc-votes`;
   try {
-    const res = await fetch(`${API}/api/game/npc-votes`, {
+    const res = await fetch(voteEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ game_id: gameId }),
@@ -602,7 +654,23 @@ async function finalizeVote() {
     // If instant victory fired (martyr/revenge etc.), stop here — result screen is already shown
     if (gameState.game_over) return;
 
-    // Route to cheat phase
+    // Lite mode: check for lite pending decoy (human as defender)
+    if (gameState.game_mode === 'lite') {
+      if (gameState.lite_pending_decoy) {
+        showLiteCheatReactPanel(gameState.lite_pending_decoy.decoy_text);
+      } else {
+        // Check if human hinmin can cheat (lite)
+        const me = gameState.players.find(p => p.id === playerId);
+        if (me && me.role === 'hinmin' && !me.cheat_used_this_night && !me.is_hanged) {
+          showLiteCheatDecoyPanel();
+        } else {
+          await completeCheatPhase();
+        }
+      }
+      return;
+    }
+
+    // Hard mode: Route to cheat phase
     if (data.pending_cheat) {
       showDefendPanel(data.pending_cheat.hint);
     } else if (data.human_can_cheat) {
@@ -1614,6 +1682,148 @@ function escHtml(str) {
 function roleLabel(role) {
   const map = { fugo: '富豪', heimin: '平民', hinmin: '貧民' };
   return map[role] || role;
+}
+
+// ═══════════════════════════════════════════════════════════
+//   LITE MODE: 陽動イカサマシステム
+// ═══════════════════════════════════════════════════════════
+
+function showLiteCheatDecoyPanel() {
+  // Fill target select
+  const targetSel = $('lite-cheat-target');
+  targetSel.innerHTML = '';
+  gameState.players
+    .filter(p => p.id !== playerId && !p.is_hanged && !p.is_out)
+    .forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.name;
+      targetSel.appendChild(opt);
+    });
+  $('lite-decoy-text').value = '';
+  $('lite-real-text').value = '';
+  $('lite-cheat-decoy-panel').classList.remove('hidden');
+}
+
+$('lite-cheat-submit-btn').addEventListener('click', submitLiteCheatDecoy);
+$('lite-cheat-skip-btn').addEventListener('click', async () => {
+  $('lite-cheat-decoy-panel').classList.add('hidden');
+  await completeCheatPhase();
+});
+
+async function submitLiteCheatDecoy() {
+  const targetId = $('lite-cheat-target').value;
+  const decoyText = $('lite-decoy-text').value.trim();
+  const realText = $('lite-real-text').value.trim();
+  if (!decoyText || !realText) {
+    alert('【陽動】と【本命】の両方を入力してください');
+    return;
+  }
+  $('lite-cheat-submit-btn').disabled = true;
+  $('lite-cheat-decoy-panel').classList.add('hidden');
+
+  try {
+    const res = await fetch(`${API}/api/game/lite/cheat-decoy`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        game_id: gameId,
+        cheater_id: playerId,
+        target_id: targetId,
+        decoy_text: decoyText,
+        real_text: realText,
+      }),
+    });
+    const data = await res.json();
+    gameState = data.state;
+
+    if (data.pending) {
+      // Human is defending — show react panel
+      showLiteCheatReactPanel(data.decoy_shown);
+    } else {
+      // NPC was targeted — show result
+      showLiteCheatResult(data);
+    }
+  } catch (e) {
+    console.error(e);
+    await completeCheatPhase();
+  } finally {
+    $('lite-cheat-submit-btn').disabled = false;
+  }
+}
+
+function showLiteCheatReactPanel(decoyText) {
+  $('lite-decoy-display').textContent = decoyText;
+  $('lite-react-input').value = '';
+  $('lite-cheat-react-panel').classList.remove('hidden');
+  $('lite-react-submit-btn').disabled = false;
+
+  // Start 5-second countdown
+  let seconds = 5;
+  $('lite-react-timer').textContent = seconds;
+  if (liteReactTimer) clearInterval(liteReactTimer);
+  liteReactTimer = setInterval(() => {
+    seconds -= 1;
+    const el = $('lite-react-timer');
+    if (el) el.textContent = seconds;
+    if (seconds <= 0) {
+      clearInterval(liteReactTimer);
+      liteReactTimer = null;
+      // Auto-submit with empty reaction (time expired)
+      submitLiteCheatReact();
+    }
+  }, 1000);
+}
+
+$('lite-react-submit-btn').addEventListener('click', submitLiteCheatReact);
+
+async function submitLiteCheatReact() {
+  if (liteReactTimer) {
+    clearInterval(liteReactTimer);
+    liteReactTimer = null;
+  }
+  $('lite-react-submit-btn').disabled = true;
+  $('lite-cheat-react-panel').classList.add('hidden');
+
+  const reaction = ($('lite-react-input').value || '').slice(0, 15);
+
+  try {
+    const res = await fetch(`${API}/api/game/lite/cheat-react`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ game_id: gameId, defender_id: playerId, reaction }),
+    });
+    const data = await res.json();
+    gameState = data.state;
+    showLiteCheatResult(data);
+  } catch (e) {
+    console.error(e);
+    renderAll();
+    await completeCheatPhase();
+  }
+}
+
+function showLiteCheatResult(data) {
+  const panel = $('lite-cheat-result-panel');
+  const judgmentMap = { big_success: '🃏 陽動成功！', draw: '🛡 かわした！', big_fail: '💥 露見！' };
+  $('lite-cheat-result-title').textContent = judgmentMap[data.judgment] || 'イカサマ結果';
+  $('lite-cheat-result-story').textContent = data.story || '';
+
+  const revealEl = $('lite-cheat-result-reveal');
+  if (data.cheater_revealed && data.cheater_name) {
+    revealEl.textContent = `⚠ ${data.cheater_name}のイカサマが露見しました！（翌日の投票に注意）`;
+    revealEl.classList.remove('hidden');
+  } else {
+    revealEl.classList.add('hidden');
+  }
+
+  panel.classList.remove('hidden');
+
+  $('lite-cheat-result-ok').onclick = async () => {
+    panel.classList.add('hidden');
+    renderAll();
+    await completeCheatPhase();
+  };
 }
 
 // ─── Init ────────────────────────────────────────────────────

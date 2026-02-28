@@ -53,6 +53,15 @@ def assign_roles(num_players: int) -> List[Role]:
     return roles
 
 
+def assign_roles_lite(num_players: int = 5) -> List[Role]:
+    """Lite mode: fixed composition — 1 FUGO, 1 HINMIN, rest HEIMIN."""
+    roles = [Role.FUGO, Role.HINMIN]
+    while len(roles) < num_players:
+        roles.append(Role.HEIMIN)
+    random.shuffle(roles)
+    return roles
+
+
 # ─────────────────────────────────────────────
 # Card strength helpers
 # ─────────────────────────────────────────────

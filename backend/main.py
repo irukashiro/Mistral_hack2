@@ -29,11 +29,17 @@ from ai_service import (
     judge_cheat,
     process_all_npc_cheats,
     run_npc_turns,
+    # Lite mode
+    generate_lite_characters,
+    generate_lite_npc_speeches,
+    decide_npc_lite_vote,
+    judge_lite_cheat_decoy,
 )
 from game_engine import (
     apply_cheat_effect,
     apply_pass,
     apply_play,
+    assign_roles_lite,
     check_revolution_victory,
     execute_hanging,
     init_relationship_matrix,
@@ -58,6 +64,9 @@ from models import (
     GameIdRequest,
     GameIdWithPlayerRequest,
     GameState,
+    LiteCheatDecoyRequest,
+    LiteCheatReactRequest,
+    LitePendingDecoy,
     PassRequest,
     PassResponse,
     PlayCardsRequest,
@@ -220,6 +229,13 @@ def _state_to_dict(
             }
             for m in state.night_chat_log
         ],
+        "game_mode": state.game_mode,
+        "lite_pending_decoy": {
+            "cheater_id": state.lite_pending_decoy.cheater_id,
+            "cheater_name": state.lite_pending_decoy.cheater_name,
+            "target_id": state.lite_pending_decoy.target_id,
+            "decoy_text": state.lite_pending_decoy.decoy_text,
+        } if state.lite_pending_decoy else None,
     }
 
 
@@ -999,6 +1015,322 @@ async def end_night(request: GameIdRequest):
 
     state = transition_to_day(state)
     return {"state": _state_to_dict(state, "player_human")}
+
+
+# ═══════════════════════════════════════════════════════════
+#   LITE MODE ENDPOINTS
+# ═══════════════════════════════════════════════════════════
+
+@app.post("/api/game/start-lite", response_model=StartGameResponse)
+async def start_game_lite(request: StartGameRequest):
+    """Lite mode: 5-player fixed composition (3 HEIMIN + 1 FUGO + 1 HINMIN).
+    Lightweight characters, no amnesia, no world setting."""
+    # Force 4 NPCs (total 5 players)
+    npc_count = 4
+
+    try:
+        npc_characters = await generate_lite_characters(npc_count, player_name=request.player_name)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"キャラクター生成エラー: {str(e)}")
+
+    human_id = "player_human"
+
+    # Assign role to human player from the lite pool (1 fugo, 1 hinmin, 3 heimin across all 5)
+    # Since generate_lite_characters assigns 4 NPC roles: 1 fugo + 1 hinmin + 2 heimin
+    # Human gets the remaining 1 heimin slot... OR randomize properly.
+    # Actually: we need 5 total players with 1 fugo, 1 hinmin, 3 heimin.
+    # generate_lite_characters(4) does: 1 fugo, 1 hinmin, 2 heimin for 4 NPCs.
+    # Human player → gets the 3rd heimin role.
+    # But we could randomize this differently. Let's do a full 5-player role draw and assign one to human.
+    all_roles = assign_roles_lite(5)
+    npc_roles = all_roles[:4]
+    human_role = all_roles[4]
+
+    # Override NPC roles to match the 5-player distribution
+    for i, npc in enumerate(npc_characters):
+        npc.role = npc_roles[i]
+        # Update victory condition to match new role
+        if npc.role == Role.FUGO:
+            npc.victory_condition = VictoryCondition(
+                type="first_out",
+                description="大富豪パートで手札を2枚以下に減らす（誰かが上がる前に）",
+            )
+        elif npc.role == Role.HINMIN:
+            npc.victory_condition = VictoryCondition(
+                type="revolution",
+                description="富豪より先に上がる、または2・ジョーカーを場に出す",
+            )
+        else:
+            npc.victory_condition = VictoryCondition(
+                type="first_out",
+                description="富豪と貧民を両方排除して生き残る",
+            )
+
+    role_desc = {
+        Role.FUGO: "平民のフリをして潜伏し、貧民への疑惑を煽る",
+        Role.HINMIN: "平民のフリをして潜伏し、富豪への疑惑を煽る",
+        Role.HEIMIN: "富豪と貧民を両方排除することが目的",
+    }
+    if human_role == Role.FUGO:
+        vc = VictoryCondition(
+            type="first_out",
+            description="大富豪パートで手札を2枚以下に減らす（誰かが上がる前に）",
+        )
+    elif human_role == Role.HINMIN:
+        vc = VictoryCondition(
+            type="revolution",
+            description="富豪より先に上がる、または2・ジョーカーを場に出す",
+        )
+    else:
+        vc = VictoryCondition(
+            type="first_out",
+            description="富豪と貧民を両方排除して生き残る",
+        )
+
+    human_character = Character(
+        id=human_id,
+        name=request.player_name,
+        role=human_role,
+        backstory=f"あなたは{human_role.value}（{role_desc.get(human_role, '')}）として参加する。",
+        personality="プレイヤー",
+        speech_style="自由",
+        victory_condition=vc,
+        is_human=True,
+    )
+
+    all_characters = [human_character] + npc_characters
+
+    state = initialize_game(all_characters, human_id)
+    state.game_mode = "lite"
+
+    state = init_relationship_matrix(state)
+    state = update_all_character_states(state)
+    game_store[state.game_id] = state
+
+    role_jp = {"fugo": "富豪", "hinmin": "貧民", "heimin": "平民"}
+    intro_text = (
+        f"【Liteモード】5人ゲーム開始！\n"
+        f"あなたの役割は「{role_jp.get(human_role.value, '不明')}」です。\n"
+        f"目標: {vc.description}\n"
+        f"議論を始めてください。（昼チャット上限: 5回）"
+    )
+    state.chat_history.append(ChatMessage(
+        speaker_id="system",
+        speaker_name="システム",
+        text=intro_text,
+        turn=state.day_number,
+    ))
+
+    return StartGameResponse(
+        game_id=state.game_id,
+        state=_state_to_dict(state, human_id),
+        player_id=human_id,
+    )
+
+
+@app.post("/api/game/lite/chat")
+async def lite_chat(request: ChatRequest):
+    """Lite mode: player speaks; NPCs respond with role-based foreshadowing."""
+    state = game_store.get(request.game_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="ゲームが見つかりません")
+    if state.game_mode != "lite":
+        raise HTTPException(status_code=400, detail="Liteモードではありません")
+    if state.phase != "day":
+        raise HTTPException(status_code=400, detail="昼フェーズでのみ発言できます")
+    if state.day_chat_count >= 5:
+        raise HTTPException(status_code=400, detail="本日の発言回数上限（5回）に達しました。投票フェーズへ進んでください。")
+
+    player = state.get_player(request.player_id)
+    player_name = player.name if player else "プレイヤー"
+    state.chat_history.append(ChatMessage(
+        speaker_id=request.player_id,
+        speaker_name=player_name,
+        text=request.message,
+        turn=state.day_number,
+    ))
+
+    try:
+        npc_responses = await generate_lite_npc_speeches(state, request.message)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"NPC発言生成エラー: {str(e)}")
+
+    for resp in npc_responses:
+        state.chat_history.append(ChatMessage(
+            speaker_id=resp["npc_id"],
+            speaker_name=resp["name"],
+            text=resp["text"],
+            turn=state.day_number,
+        ))
+        if resp.get("reasoning") or resp.get("foreshadowing"):
+            state.debug_log.append({
+                "type": "chat",
+                "actor": resp["npc_id"],
+                "actor_name": resp["name"],
+                "reasoning": resp.get("reasoning", ""),
+                "detail": {"text": resp["text"], "foreshadowing": resp.get("foreshadowing", "")},
+                "turn": state.day_number,
+            })
+
+    state.day_chat_count += 1
+
+    return {
+        "chat_history": [
+            {"speaker_id": m.speaker_id, "speaker_name": m.speaker_name, "text": m.text, "turn": m.turn}
+            for m in state.chat_history[-20:]
+        ],
+        "npc_responses": npc_responses,
+        "day_chat_count": state.day_chat_count,
+        "day_chat_max": 5,
+    }
+
+
+@app.post("/api/game/lite/npc-votes")
+async def lite_npc_votes(request: GameIdRequest):
+    """Lite mode: trigger NPC voting with the hate system."""
+    state = game_store.get(request.game_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="ゲームが見つかりません")
+    if state.game_mode != "lite":
+        raise HTTPException(status_code=400, detail="Liteモードではありません")
+
+    npcs = [p for p in state.alive_players() if not p.is_human]
+    npc_vote_info = []
+
+    for npc in npcs:
+        if npc.id not in state.votes:
+            try:
+                target_id, reasoning = await decide_npc_lite_vote(npc, state)
+                if target_id:
+                    state.votes[npc.id] = target_id
+                    update_relationship_for_vote(state, npc.id, target_id)
+                    target = state.get_player(target_id)
+                    npc_vote_info.append({
+                        "voter": npc.name,
+                        "target": target.name if target else target_id,
+                        "reasoning": reasoning,
+                    })
+                    state.debug_log.append({
+                        "type": "vote",
+                        "actor": npc.id,
+                        "actor_name": npc.name,
+                        "reasoning": reasoning,
+                        "detail": {"target_id": target_id},
+                        "turn": state.day_number,
+                    })
+            except Exception:
+                pass
+
+    return {
+        "votes": state.votes,
+        "vote_counts": tally_votes(state.votes),
+        "npc_vote_info": npc_vote_info,
+    }
+
+
+@app.post("/api/game/lite/cheat-decoy")
+async def lite_cheat_decoy(request: LiteCheatDecoyRequest):
+    """Lite mode: hinmin submits decoy + real cheat. Stores pending decoy for defender."""
+    state = game_store.get(request.game_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="ゲームが見つかりません")
+    if state.game_mode != "lite":
+        raise HTTPException(status_code=400, detail="Liteモードではありません")
+    if state.phase != "night":
+        raise HTTPException(status_code=400, detail="夜フェーズでのみイカサマできます")
+
+    cheater = state.get_player(request.cheater_id)
+    target = state.get_player(request.target_id)
+
+    if cheater is None or cheater.is_hanged:
+        raise HTTPException(status_code=400, detail="無効なプレイヤーです")
+    if target is None or target.is_hanged:
+        raise HTTPException(status_code=400, detail="無効なターゲットです")
+    if cheater.cheat_used_this_night:
+        raise HTTPException(status_code=400, detail="今夜すでにイカサマを使いました")
+
+    cheater.cheat_used_this_night = True
+
+    if target.is_human:
+        # Human is the target — store pending decoy for them to react to
+        state.lite_pending_decoy = LitePendingDecoy(
+            cheater_id=cheater.id,
+            cheater_name=cheater.name,
+            target_id=target.id,
+            decoy_text=request.decoy_text,
+            real_text=request.real_text,
+        )
+        return {
+            "pending": True,
+            "decoy_shown": request.decoy_text,
+            "state": _state_to_dict(state, "player_human"),
+        }
+    else:
+        # NPC is the target — auto-generate a short reaction for the NPC
+        # NPC reacts to decoy (simplified: random chance of falling for it)
+        fell_for_decoy = random.random() < 0.65  # 65% chance NPC is fooled
+        npc_reaction = "上を見る" if fell_for_decoy else "手元を押さえる"
+        effect = await judge_lite_cheat_decoy(
+            cheater, target,
+            request.decoy_text, request.real_text,
+            npc_reaction if fell_for_decoy else "手元のカードを強く握る",
+            state,
+        )
+        state = apply_cheat_effect(state, effect)
+        update_relationship_for_cheat(state, cheater.id, target.id, success=(effect.judgment == "big_success"))
+        state = update_all_character_states(state)
+        return {
+            "pending": False,
+            "story": effect.story,
+            "judgment": effect.judgment,
+            "effect_type": effect.type.value,
+            "state": _state_to_dict(state, request.cheater_id),
+        }
+
+
+@app.post("/api/game/lite/cheat-react")
+async def lite_cheat_react(request: LiteCheatReactRequest):
+    """Lite mode: human defender reacts to the decoy (15-char limit)."""
+    state = game_store.get(request.game_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="ゲームが見つかりません")
+    if state.game_mode != "lite":
+        raise HTTPException(status_code=400, detail="Liteモードではありません")
+    if state.lite_pending_decoy is None:
+        raise HTTPException(status_code=400, detail="陽動イカサマが待機していません")
+
+    pending = state.lite_pending_decoy
+    cheater = state.get_player(pending.cheater_id)
+    target = state.get_player(pending.target_id)
+
+    if cheater is None or target is None:
+        raise HTTPException(status_code=400, detail="プレイヤーが見つかりません")
+
+    # Enforce 15-char reaction limit
+    reaction = request.reaction[:15] if request.reaction else ""
+
+    effect = await judge_lite_cheat_decoy(
+        cheater, target,
+        pending.decoy_text, pending.real_text,
+        reaction,
+        state,
+    )
+    state = apply_cheat_effect(state, effect)
+    update_relationship_for_cheat(state, pending.cheater_id, pending.target_id,
+                                  success=(effect.judgment == "big_success"))
+    state = update_all_character_states(state)
+    state.lite_pending_decoy = None
+
+    cheater_revealed = (effect.judgment == "big_fail")
+
+    return {
+        "story": effect.story,
+        "judgment": effect.judgment,
+        "effect_type": effect.type.value,
+        "cheater_revealed": cheater_revealed,
+        "cheater_name": pending.cheater_name if cheater_revealed else None,
+        "state": _state_to_dict(state, "player_human"),
+    }
 
 
 @app.get("/api/game/list")

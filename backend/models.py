@@ -204,6 +204,9 @@ class GameState(BaseModel):
     victory_reason: str = ""  # 勝利理由テキスト
     day_chat_count: int = 0  # 昼フェーズの発言回数（上限5回）
     night_chat_log: List[ChatMessage] = Field(default_factory=list)  # 夜フェーズのチャットログ
+    game_mode: Literal["hard", "lite"] = "hard"  # ゲームモード
+    # Lite mode: 陽動イカサマシステム
+    lite_pending_decoy: Optional["LitePendingDecoy"] = None  # 陽動イカサマ待機中（防御者向け）
 
     def get_player(self, player_id: str) -> Optional[Character]:
         for p in self.players:
@@ -231,6 +234,7 @@ class GameState(BaseModel):
 class StartGameRequest(BaseModel):
     npc_count: int = Field(default=4, ge=2, le=6)
     player_name: str = "プレイヤー"
+    game_mode: Literal["hard", "lite"] = "hard"
 
 
 class StartGameResponse(BaseModel):
@@ -313,3 +317,30 @@ class CheatDefendRequest(BaseModel):
     defender_id: str = "player_human"
     defense_method: str = ""
     defense_category: str = ""
+
+
+# ─── Lite Mode models ───────────────────────────────────────────
+
+class LitePendingDecoy(BaseModel):
+    """Pending decoy cheat waiting for defender's quick reaction."""
+    cheater_id: str
+    cheater_name: str
+    target_id: str
+    decoy_text: str   # 陽動テキスト（防御者に表示される）
+    real_text: str    # 本命テキスト（AIジャッジのみ知る）
+
+
+class LiteCheatDecoyRequest(BaseModel):
+    """Hinmin player submits decoy+real cheat."""
+    game_id: str
+    cheater_id: str = "player_human"
+    target_id: str
+    decoy_text: str   # 陽動アクション
+    real_text: str    # 本命アクション
+
+
+class LiteCheatReactRequest(BaseModel):
+    """Defender reacts to the decoy (15 chars max)."""
+    game_id: str
+    defender_id: str = "player_human"
+    reaction: str = ""  # 最大15文字のリアクション
