@@ -219,14 +219,11 @@ function renderAll() {
     }
   }
 
-  // Debug log panel & relationship matrix (god eye mode)
-  if (godEyeMode) {
-    renderDebugLog();
-    renderRelationshipMatrix();
-  } else {
-    $('debug-log-panel').classList.add('hidden');
-    $('relationship-matrix-panel').classList.add('hidden');
-  }
+  // Debug side panel (god eye mode)
+  renderDebugSidePanel();
+  // Keep legacy floating panels hidden
+  $('debug-log-panel').classList.add('hidden');
+  $('relationship-matrix-panel').classList.add('hidden');
 
   saveGameToStorage();
 }
@@ -1146,7 +1143,17 @@ async function fetchAndApplyDebugState() {
   if (!gameId) return;
   try {
     const res = await fetch(`${API}/api/game/debug-state?game_id=${gameId}`);
+    if (!res.ok) {
+      console.warn('debug-state endpoint error:', res.status);
+      renderDebugSidePanel();
+      return;
+    }
     const data = await res.json();
+    if (!data || !Array.isArray(data.players)) {
+      console.warn('debug-state: unexpected response', data);
+      renderDebugSidePanel();
+      return;
+    }
     // Apply debug fields to local gameState players
     data.players.forEach(debugP => {
       const p = gameState.players.find(gp => gp.id === debugP.id);
@@ -1157,18 +1164,12 @@ async function fetchAndApplyDebugState() {
         if (debugP.hand) p.hand = debugP.hand;
       }
     });
-    // Apply debug_log and relationship_matrix
-    if (data.debug_log) {
-      gameState.debug_log = data.debug_log;
-    }
-    if (data.relationship_matrix) {
-      gameState.relationship_matrix = data.relationship_matrix;
-    }
+    if (data.debug_log) gameState.debug_log = data.debug_log;
+    if (data.relationship_matrix) gameState.relationship_matrix = data.relationship_matrix;
     renderAll();
-    renderDebugLog();
-    renderRelationshipMatrix();
   } catch (e) {
-    console.error(e);
+    console.error('fetchAndApplyDebugState:', e);
+    renderDebugSidePanel();
   }
 }
 
@@ -1267,6 +1268,89 @@ function renderRelationshipMatrix() {
 
   body.innerHTML = html;
   panel.classList.remove('hidden');
+}
+
+// ─── Debug Side Panel ─────────────────────────────────────────
+function renderDebugSidePanel() {
+  const panel = $('debug-side-panel');
+  if (!godEyeMode || !gameState) {
+    panel.classList.add('hidden');
+    return;
+  }
+  panel.classList.remove('hidden');
+
+  // 1. Player true info
+  const playersInfo = $('debug-players-info');
+  playersInfo.innerHTML = '';
+  gameState.players.forEach(p => {
+    const div = document.createElement('div');
+    div.className = 'debug-player-card';
+    const roleLabel = p._debug_role || p.role || '?';
+    const trueWin = p._debug_true_win
+      ? `${p._debug_true_win.type}: ${p._debug_true_win.description || ''}` : '';
+    const raw = p._debug_backstory || p.backstory || '';
+    const backstory = raw.slice(0, 90) + (raw.length > 90 ? '…' : '');
+    div.innerHTML =
+      `<div class="debug-player-name">${escHtml(p.name)}${p.is_human ? ' 👤' : ''}</div>` +
+      `<div class="debug-player-role">${escHtml(roleLabel)}</div>` +
+      (trueWin ? `<div class="debug-player-win">🎯 ${escHtml(trueWin)}</div>` : '') +
+      `<div class="debug-player-back">${escHtml(backstory)}</div>`;
+    playersInfo.appendChild(div);
+  });
+
+  // 2. Relationship matrix (compact inline)
+  const relDiv = $('debug-rel-matrix-inline');
+  const matrix = gameState.relationship_matrix;
+  if (matrix && Object.keys(matrix).length > 0) {
+    const ids = gameState.players.map(p => p.id);
+    const nameMap = {};
+    gameState.players.forEach(p => { nameMap[p.id] = p.name; });
+    let html = '<table class="debug-rel-table"><tr><th></th>';
+    ids.forEach(id => {
+      html += `<th title="${escHtml(nameMap[id] || id)}">${escHtml((nameMap[id] || id).slice(0, 3))}</th>`;
+    });
+    html += '</tr>';
+    ids.forEach(rowId => {
+      html += `<tr><td class="debug-rel-row">${escHtml((nameMap[rowId] || rowId).slice(0, 3))}</td>`;
+      ids.forEach(colId => {
+        if (rowId === colId) {
+          html += '<td class="rel-self">-</td>';
+        } else {
+          const val = (matrix[rowId] && matrix[rowId][colId] !== undefined) ? matrix[rowId][colId] : 0;
+          const cls = val > 0 ? 'rel-pos' : val < 0 ? 'rel-neg' : '';
+          html += `<td class="${cls}">${val}</td>`;
+        }
+      });
+      html += '</tr>';
+    });
+    html += '</table>';
+    relDiv.innerHTML = html;
+  } else {
+    relDiv.innerHTML = '<span class="debug-muted">データなし</span>';
+  }
+
+  // 3. AI log (latest 15, newest first)
+  const logDiv = $('debug-ai-log-inline');
+  const log = (gameState.debug_log || []).slice(-15).reverse();
+  const typeLabels = { vote: '投票', play: '🃏', chat: '💬', cheat: '⚠', victory: '🏆', api_call: 'API' };
+  if (log.length === 0) {
+    logDiv.innerHTML = '<span class="debug-muted">ログなし</span>';
+  } else {
+    logDiv.innerHTML = log.map(entry => {
+      const label = typeLabels[entry.type] || entry.type;
+      let reasoning = '';
+      if (typeof entry.reasoning === 'object' && entry.reasoning) {
+        reasoning = Object.entries(entry.reasoning).map(([k, v]) => `${k}:${v}`).join(' ');
+      } else {
+        reasoning = String(entry.reasoning || '');
+      }
+      return `<div class="debug-log-mini">` +
+        `<span class="dlm-badge">${escHtml(label)}</span>` +
+        `<span class="dlm-actor">${escHtml(entry.actor_name || '')}</span>` +
+        `<span class="dlm-reason">${escHtml(reasoning.slice(0, 80))}</span>` +
+        `</div>`;
+    }).join('');
+  }
 }
 
 // ─── Hints System ─────────────────────────────────────────────

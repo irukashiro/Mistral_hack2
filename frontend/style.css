@@ -313,11 +313,143 @@ body {
 }
 
 /* ============================================================
+   Game Body (main + debug side panel)
+   ============================================================ */
+.game-body {
+  display: flex;
+  height: calc(100vh - 52px);
+  overflow: hidden;
+}
+
+/* ============================================================
    Game Main
    ============================================================ */
 .game-main {
-  height: calc(100vh - 52px);
+  flex: 1;
   overflow: hidden;
+  min-width: 0;
+}
+
+/* ============================================================
+   Debug Side Panel (god eye mode)
+   ============================================================ */
+.debug-side-panel {
+  width: 280px;
+  flex-shrink: 0;
+  background: #0a0a16;
+  border-left: 1px solid var(--border-gold);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  font-size: 0.75rem;
+}
+.debug-side-panel.hidden { display: none; }
+
+.debug-side-header {
+  padding: 0.7rem 0.8rem 0.5rem;
+  border-bottom: 1px solid var(--border-gold);
+  position: sticky;
+  top: 0;
+  background: #0a0a16;
+  z-index: 1;
+}
+.debug-side-title {
+  color: var(--gold);
+  font-size: 0.8rem;
+  font-weight: bold;
+  letter-spacing: 0.08em;
+}
+
+.debug-section {
+  padding: 0.6rem 0.8rem;
+  border-bottom: 1px solid rgba(200,168,75,0.15);
+}
+.debug-section-label {
+  color: var(--gold);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 0.5rem;
+  font-weight: bold;
+}
+
+.debug-player-card {
+  background: rgba(255,255,255,0.04);
+  border-radius: 4px;
+  padding: 0.4rem 0.5rem;
+  margin-bottom: 0.4rem;
+  border-left: 2px solid var(--border);
+}
+.debug-player-card:last-child { margin-bottom: 0; }
+.debug-player-name {
+  font-weight: bold;
+  color: var(--text-primary);
+  font-size: 0.78rem;
+}
+.debug-player-role {
+  color: var(--gold-dark);
+  font-size: 0.72rem;
+  margin-top: 0.1rem;
+}
+.debug-player-win {
+  color: #a8d8a8;
+  font-size: 0.7rem;
+  margin-top: 0.15rem;
+}
+.debug-player-back {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  margin-top: 0.15rem;
+  line-height: 1.4;
+}
+
+/* Inline compact relationship table */
+.debug-rel-table {
+  border-collapse: collapse;
+  font-size: 0.68rem;
+  width: 100%;
+}
+.debug-rel-table th,
+.debug-rel-table td {
+  border: 1px solid rgba(255,255,255,0.1);
+  padding: 2px 4px;
+  text-align: center;
+}
+.debug-rel-table th { color: var(--gold-dark); background: rgba(200,168,75,0.08); }
+.debug-rel-row { color: var(--text-secondary); font-weight: bold; text-align: right !important; }
+.rel-pos { color: #a8d8a8; font-weight: bold; }
+.rel-neg { color: var(--red-light); font-weight: bold; }
+.rel-self { color: #444; }
+.debug-muted { color: var(--text-muted); font-size: 0.72rem; }
+
+/* Inline AI log */
+.debug-log-mini {
+  padding: 0.3rem 0;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  align-items: flex-start;
+}
+.debug-log-mini:last-child { border-bottom: none; }
+.dlm-badge {
+  background: rgba(200,168,75,0.15);
+  color: var(--gold-dark);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 0.65rem;
+  flex-shrink: 0;
+}
+.dlm-actor {
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  flex-shrink: 0;
+}
+.dlm-reason {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  line-height: 1.4;
+  word-break: break-all;
 }
 
 .phase-panel {

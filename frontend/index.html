@@ -66,6 +66,7 @@
     </div>
 
     <!-- Main Area -->
+    <div class="game-body">
     <main class="game-main">
 
       <!-- ===== DAY PHASE ===== -->
@@ -214,6 +215,27 @@
       </div>
 
     </main>
+
+    <!-- Debug Side Panel (god eye mode) -->
+    <aside id="debug-side-panel" class="debug-side-panel hidden">
+      <div class="debug-side-header">
+        <span class="debug-side-title">🔍 神の目モード</span>
+      </div>
+      <div class="debug-section">
+        <div class="debug-section-label">プレイヤー真相</div>
+        <div id="debug-players-info" class="debug-players-info"></div>
+      </div>
+      <div class="debug-section">
+        <div class="debug-section-label">関係性マトリクス</div>
+        <div id="debug-rel-matrix-inline" class="debug-rel-matrix-inline"></div>
+      </div>
+      <div class="debug-section">
+        <div class="debug-section-label">AIログ</div>
+        <div id="debug-ai-log-inline" class="debug-ai-log-inline"></div>
+      </div>
+    </aside>
+
+    </div><!-- /.game-body -->
 
     <!-- Relationship Matrix Panel (god eye mode only) -->
     <div id="relationship-matrix-panel" class="relationship-matrix-panel hidden">
