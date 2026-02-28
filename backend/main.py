@@ -16,9 +16,15 @@ load_dotenv()
 
 from ai_service import (
     decide_npc_vote,
+    detect_investigation_facts,
+    generate_amnesia_clue,
     generate_characters,
+    generate_hints,
+    generate_human_relationships,
     generate_npc_defense,
     generate_npc_speeches_for_player_message,
+    generate_night_situation,
+    generate_world_setting,
     judge_cheat,
     process_all_npc_cheats,
     run_npc_turns,
@@ -68,7 +74,11 @@ app.add_middleware(
 game_store: Dict[str, GameState] = {}
 
 
-def _state_to_dict(state: GameState, requesting_player_id: str = None) -> dict:
+def _state_to_dict(
+    state: GameState,
+    requesting_player_id: str = None,
+    include_hidden: bool = False,
+) -> dict:
     """Convert game state to dict, hiding private info where appropriate."""
     players_data = []
     for p in state.players:
@@ -81,15 +91,15 @@ def _state_to_dict(state: GameState, requesting_player_id: str = None) -> dict:
             "hand_count": p.hand_count(),
             "victory_condition_description": p.victory_condition.description,
         }
-        # Show role to: the player themselves, hanged players (revealed), requesting player
+        # Show role to: the player themselves, hanged players (revealed), or hidden mode
         is_self = p.is_human or (requesting_player_id and p.id == requesting_player_id)
-        if is_self or p.is_hanged:
+        if is_self or p.is_hanged or include_hidden:
             pdata["role"] = p.role.value
         else:
             pdata["role"] = None  # hidden
 
-        # Show hand to: self, hanged (public hand), or hand_revealed via cheat effect
-        if is_self or p.is_hanged or p.hand_revealed:
+        # Show hand to: self, hanged (public hand), hand_revealed via cheat, or hidden mode
+        if is_self or p.is_hanged or p.hand_revealed or include_hidden:
             pdata["hand"] = [c.to_dict() for c in p.hand]
         else:
             pdata["hand"] = None  # hidden
@@ -97,8 +107,33 @@ def _state_to_dict(state: GameState, requesting_player_id: str = None) -> dict:
         pdata["cheat_used_this_night"] = p.cheat_used_this_night
         pdata["hand_revealed"] = p.hand_revealed
         pdata["skip_next_turn"] = p.skip_next_turn
+        pdata["argument_style"] = p.argument_style
+        pdata["true_win"] = p.true_win.model_dump() if p.true_win else None
+
+        # Show backstory and relationships for self or in hidden mode
+        if is_self or include_hidden:
+            pdata["backstory"] = p.backstory
+            pdata["relationships"] = [
+                {"target_id": r.target_id, "description": r.description}
+                for r in p.relationships
+            ]
+
+        # Debug fields present only in hidden mode
+        if include_hidden:
+            pdata["_debug_role"] = p.role.value
+            pdata["_debug_backstory"] = p.backstory
+            pdata["_debug_true_win"] = p.true_win.model_dump() if p.true_win else None
 
         players_data.append(pdata)
+
+    # Ghost mode: human player is hanged and requesting
+    human = state.get_human_player()
+    is_ghost_mode = (
+        human is not None
+        and human.is_hanged
+        and requesting_player_id is not None
+        and human.id == requesting_player_id
+    )
 
     return {
         "game_id": state.game_id,
@@ -137,9 +172,14 @@ def _state_to_dict(state: GameState, requesting_player_id: str = None) -> dict:
                 "cheater_id": e.cheater_id,
                 "target_id": e.target_id,
                 "story": e.story,
+                "judgment": e.judgment,
             }
             for e in state.cheat_log
         ],
+        "night_situation": state.night_situation,
+        "investigation_notes": state.investigation_notes,
+        "amnesia_clues": state.amnesia_clues,
+        "is_ghost_mode": is_ghost_mode,
     }
 
 
@@ -166,22 +206,33 @@ async def serve_frontend():
 
 @app.post("/api/game/start", response_model=StartGameResponse)
 async def start_game(request: StartGameRequest):
-    """Start a new game: generate characters, deal cards, set up state."""
+    """Start a new game: generate world setting, characters, deal cards, set up state."""
+    # 1. Generate shared world setting first
     try:
-        # Generate NPC characters via Mistral AI
-        npc_characters = await generate_characters(request.npc_count)
+        world_setting = await generate_world_setting()
+    except Exception:
+        world_setting = {}
+
+    # 2. Generate NPC characters with world setting context
+    try:
+        npc_characters = await generate_characters(request.npc_count, world_setting=world_setting, player_name=request.player_name)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"キャラクター生成エラー: {str(e)}")
 
-    # Create human player character
+    # Create human player character — amnesiac who doesn't know their own past
     human_id = "player_human"
     human_role = random.choice(list(Role))
+    amnesia_backstory = (
+        "……記憶がない。気がつくと、この場所にいた。"
+        "自分の名前さえ、誰かに教えてもらったものだ。"
+        "しかし、ここにいる人々のどこかに、見覚えのある顔がある気がする。"
+    )
     human_character = Character(
         id=human_id,
         name=request.player_name,
         role=human_role,
-        backstory="あなた自身です。",
-        personality="プレイヤー",
+        backstory=amnesia_backstory,
+        personality="記憶喪失のプレイヤー — 何かを知っているはずなのに、思い出せない",
         speech_style="自由",
         victory_condition=VictoryCondition(
             type="first_out",
@@ -190,19 +241,37 @@ async def start_game(request: StartGameRequest):
         is_human=True,
     )
 
+    # 3. Generate relationships for the human player with world setting context
+    try:
+        human_rels = await generate_human_relationships(
+            request.player_name, npc_characters, world_setting=world_setting
+        )
+        human_character.relationships = human_rels
+    except Exception:
+        pass  # Relationships are optional
+
     all_characters = [human_character] + npc_characters
 
     # Initialize game
     state = initialize_game(all_characters, human_id)
 
+    # 4. Save world setting to state
+    state.world_setting = world_setting
+
     # Add to store
     game_store[state.game_id] = state
 
-    # Add opening chat messages
+    # Add opening chat message using world setting info
+    setting_name = world_setting.get('setting_name', '')
+    location = world_setting.get('location', '')
+    if setting_name:
+        intro_text = f"【{setting_name}】{(' — ' + location) if location else ''}\nゲームが始まりました。本日は{state.day_number}日目です。議論を始めてください。"
+    else:
+        intro_text = f"ゲームが始まりました。本日は{state.day_number}日目です。議論を始めてください。"
     state.chat_history.append(ChatMessage(
         speaker_id="system",
         speaker_name="システム",
-        text=f"ゲームが始まりました。本日は{state.day_number}日目です。議論を始めてください。",
+        text=intro_text,
         turn=state.day_number,
     ))
 
@@ -219,7 +288,113 @@ async def get_game_state(game_id: str, player_id: str = "player_human"):
     state = game_store.get(game_id)
     if state is None:
         raise HTTPException(status_code=404, detail="ゲームが見つかりません")
-    return _state_to_dict(state, player_id)
+    human = state.get_human_player()
+    is_ghost = human is not None and human.is_hanged and human.id == player_id
+    return _state_to_dict(state, player_id, include_hidden=is_ghost)
+
+
+@app.get("/api/game/hints")
+async def get_hints(game_id: str, player_id: str = "player_human"):
+    """Get AI-generated action hints and template messages for the player (day phase only)."""
+    state = game_store.get(game_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="ゲームが見つかりません")
+    if state.phase != "day":
+        raise HTTPException(status_code=400, detail="昼フェーズでのみ利用できます")
+    player = state.get_player(player_id)
+    if player is None:
+        raise HTTPException(status_code=404, detail="プレイヤーが見つかりません")
+    try:
+        result = await generate_hints(state, player)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ヒント生成エラー: {str(e)}")
+
+
+@app.get("/api/game/debug-state")
+async def debug_state(game_id: str):
+    """Return full game state with all hidden information (god eye mode)."""
+    state = game_store.get(game_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="ゲームが見つかりません")
+    return _state_to_dict(state, requesting_player_id=None, include_hidden=True)
+
+
+@app.get("/api/game/result")
+async def full_reveal(game_id: str):
+    """Return full character disclosure for the result screen."""
+    state = game_store.get(game_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="ゲームが見つかりません")
+
+    characters = []
+    for p in state.players:
+        characters.append({
+            "id": p.id,
+            "name": p.name,
+            "role": p.role.value,
+            "backstory": p.backstory,
+            "personality": p.personality,
+            "speech_style": p.speech_style,
+            "argument_style": p.argument_style,
+            "is_human": p.is_human,
+            "is_hanged": p.is_hanged,
+            "victory_condition": p.victory_condition.description,
+            "true_win": p.true_win.model_dump() if p.true_win else None,
+            "relationships": [
+                {"target_id": r.target_id, "description": r.description}
+                for r in p.relationships
+            ],
+        })
+
+    # Build flat relationship web across all players
+    relationship_web = []
+    for p in state.players:
+        for r in p.relationships:
+            relationship_web.append({
+                "from_id": p.id,
+                "from_name": p.name,
+                "to_id": r.target_id,
+                "description": r.description,
+            })
+
+    return {
+        "characters": characters,
+        "relationship_web": relationship_web,
+        "winner_ids": state.winner_ids,
+        "out_order": state.out_order,
+        "cheat_log": [
+            {
+                "type": e.type.value,
+                "cheater_id": e.cheater_id,
+                "target_id": e.target_id,
+                "story": e.story,
+                "judgment": e.judgment,
+            }
+            for e in state.cheat_log
+        ],
+        "world_setting": state.world_setting,
+        "amnesia_clues": state.amnesia_clues,
+    }
+
+
+@app.post("/api/game/ghost-advance")
+async def ghost_advance(request: dict):
+    """Ghost mode: run NPC turns automatically so the hanged player can observe."""
+    game_id = request.get("game_id")
+    state = game_store.get(game_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="ゲームが見つかりません")
+    if state.phase != "night":
+        raise HTTPException(status_code=400, detail="夜フェーズではありません")
+    try:
+        state, npc_actions = await run_npc_turns(state)
+    except Exception:
+        npc_actions = []
+    return {
+        "state": _state_to_dict(state, "player_human", include_hidden=True),
+        "npc_actions": npc_actions,
+    }
 
 
 @app.post("/api/game/chat")
@@ -247,9 +422,11 @@ async def chat(request: dict):
         turn=state.day_number,
     ))
 
-    # Generate NPC responses
+    # Generate NPC responses (pass world setting for richer references)
     try:
-        npc_responses = await generate_npc_speeches_for_player_message(state, message)
+        npc_responses = await generate_npc_speeches_for_player_message(
+            state, message, world_setting=state.world_setting
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"NPC発言生成エラー: {str(e)}")
 
@@ -260,6 +437,21 @@ async def chat(request: dict):
             text=resp["text"],
             turn=state.day_number,
         ))
+
+    # Extract investigation facts from NPC responses
+    try:
+        new_facts = await detect_investigation_facts(npc_responses, state)
+        state.investigation_notes = (state.investigation_notes + new_facts)[-20:]
+    except Exception:
+        pass
+
+    # Try to reveal an amnesia clue from NPC responses (40% chance)
+    try:
+        clue = await generate_amnesia_clue(npc_responses, state.world_setting, state.amnesia_clues)
+        if clue:
+            state.amnesia_clues = (state.amnesia_clues + [clue])[-15:]
+    except Exception:
+        pass
 
     return {
         "chat_history": [
@@ -272,6 +464,8 @@ async def chat(request: dict):
             for m in state.chat_history[-20:]
         ],
         "npc_responses": npc_responses,
+        "investigation_notes": state.investigation_notes,
+        "amnesia_clues": state.amnesia_clues,
     }
 
 
@@ -368,8 +562,26 @@ async def finalize_vote(request: dict):
                 "victory_condition": hanged.victory_condition.description,
             }
 
+    # If an instant victory triggered (martyr/revenge/beat_target), return game-over state
+    if state.game_over:
+        return {
+            "hanged_player": hanged_player_data,
+            "vote_counts": vote_counts,
+            "state": _state_to_dict(state, "player_human"),
+            "pending_cheat": None,
+            "human_can_cheat": False,
+            "npc_cheat_results": [],
+            "night_situation": "",
+        }
+
     # Transition to night phase
     state = transition_to_night(state)
+
+    # Generate night situation flavor text
+    try:
+        state.night_situation = await generate_night_situation(state)
+    except Exception:
+        state.night_situation = ""
 
     # Process NPC cheat attempts (may produce a pending_cheat for human)
     npc_cheat_results = []
@@ -397,6 +609,7 @@ async def finalize_vote(request: dict):
         "pending_cheat": pending_cheat_data,
         "human_can_cheat": human_can_cheat,
         "npc_cheat_results": npc_cheat_results,
+        "night_situation": state.night_situation,
     }
 
 
@@ -526,6 +739,7 @@ async def cheat_defend(request: dict):
     game_id = request.get("game_id")
     defender_id = request.get("defender_id", "player_human")
     defense_method = request.get("defense_method", "")
+    defense_category = request.get("defense_category", "")
 
     state = game_store.get(game_id)
     if state is None:
@@ -542,13 +756,14 @@ async def cheat_defend(request: dict):
         raise HTTPException(status_code=400, detail="プレイヤーが見つかりません")
 
     try:
-        effect = await judge_cheat(cheater, target, pending.method, defense_method, state)
+        effect = await judge_cheat(cheater, target, pending.method, defense_method, state,
+                                   defense_category=defense_category)
         state = apply_cheat_effect(state, effect)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"防御処理エラー: {str(e)}")
 
-    # Reveal cheater identity if cheat failed
-    cheater_revealed = effect.type == CheatEffectType.NO_EFFECT
+    # Reveal cheater identity only on big_fail (defense read the cheat perfectly)
+    cheater_revealed = (effect.judgment == "big_fail")
     state.pending_cheat = None
 
     return {
@@ -630,10 +845,15 @@ async def list_games():
     }
 
 
-@app.delete("/api/game/{game_id}")
+@app.post("/api/game/{game_id}/delete")
 async def delete_game(game_id: str):
     """Delete a game."""
     if game_id in game_store:
         del game_store[game_id]
         return {"message": "ゲームを削除しました"}
     raise HTTPException(status_code=404, detail="ゲームが見つかりません")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -833,9 +833,534 @@ body {
 .night-log-entry.cheat { color: #e08040; font-style: italic; }
 
 /* ============================================================
+   Night Situation Banner
+   ============================================================ */
+.night-situation {
+  text-align: center;
+  padding: 0.45rem 1rem;
+  background: linear-gradient(90deg, #0e0a1a, #1a1030, #0e0a1a);
+  border-bottom: 1px solid #3a2a5a;
+  color: #c0aae8;
+  font-size: 0.85rem;
+  font-style: italic;
+  letter-spacing: 0.04em;
+  animation: pulse-purple 3s ease-in-out infinite;
+}
+@keyframes pulse-purple {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.75; }
+}
+
+/* ============================================================
+   Chat baton indicator
+   ============================================================ */
+.chat-baton {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--gold-dark);
+  margin-top: 0.25rem;
+  font-style: italic;
+}
+
+/* ============================================================
    Scrollbars
    ============================================================ */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: var(--bg-secondary); }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--gold-dark); }
+
+/* ============================================================
+   Debug Toggle (神の目モード)
+   ============================================================ */
+.btn-debug-toggle {
+  padding: 0.25rem 0.6rem;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  line-height: 1;
+}
+.btn-debug-toggle:hover { border-color: var(--green); color: var(--green); }
+.btn-debug-toggle.active {
+  background: rgba(39,174,96,0.15);
+  border-color: var(--green-light);
+  color: var(--green-light);
+  box-shadow: 0 0 8px rgba(46,204,113,0.2);
+}
+
+/* ============================================================
+   Hints Panel
+   ============================================================ */
+.hints-toggle-btn {
+  margin: 0.4rem 0.8rem;
+  font-size: 0.8rem;
+  width: calc(100% - 1.6rem);
+}
+
+.hints-panel {
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
+  padding: 0.7rem 0.8rem;
+}
+
+.hints-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.6rem;
+}
+
+.hint-item {
+  background: var(--bg-card);
+  border-left: 3px solid var(--gold-dark);
+  padding: 0.4rem 0.7rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  border-radius: 0 4px 4px 0;
+  line-height: 1.4;
+}
+
+.templates-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+}
+
+.template-btn {
+  padding: 0.25rem 0.75rem;
+  background: rgba(200,168,75,0.08);
+  color: var(--gold);
+  border: 1px solid var(--border-gold);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.template-btn:hover { background: rgba(200,168,75,0.2); }
+
+.btn-refresh-hints {
+  padding: 0.2rem 0.6rem;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 0.72rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-refresh-hints:hover { color: var(--text-primary); border-color: var(--gold); }
+
+/* ============================================================
+   Investigation Notes (捜査メモ帳)
+   ============================================================ */
+.notes-panel {
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
+}
+
+.notes-toggle-btn {
+  width: 100%;
+  padding: 0.45rem 0.8rem;
+  background: transparent;
+  color: var(--text-secondary);
+  border: none;
+  font-size: 0.8rem;
+  cursor: pointer;
+  text-align: left;
+  transition: color 0.2s;
+}
+.notes-toggle-btn:hover { color: var(--gold); }
+
+#notes-count {
+  color: var(--gold);
+  font-weight: bold;
+}
+
+.notes-list {
+  padding: 0 0.8rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.note-item {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  padding: 0.3rem 0.5rem;
+  background: var(--bg-card);
+  border-left: 2px solid #446;
+  border-radius: 0 3px 3px 0;
+  line-height: 1.4;
+}
+
+/* ============================================================
+   Ghost Mode Banner
+   ============================================================ */
+.ghost-mode-banner {
+  text-align: center;
+  padding: 0.45rem 1rem;
+  background: linear-gradient(90deg, #1a0a2e, #2a1050, #1a0a2e);
+  border-bottom: 1px solid #6040a0;
+  color: #c8a0ff;
+  font-size: 0.85rem;
+  font-weight: bold;
+  letter-spacing: 0.05em;
+  animation: pulse-ghost 2s ease-in-out infinite;
+}
+@keyframes pulse-ghost {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* ============================================================
+   Debug Overlay (神の目)
+   ============================================================ */
+.debug-overlay {
+  margin-top: 0.4rem;
+  padding: 0.3rem 0.5rem;
+  background: rgba(39,174,96,0.07);
+  border: 1px solid rgba(39,174,96,0.25);
+  border-radius: 4px;
+}
+
+.debug-role {
+  font-size: 0.7rem;
+  font-weight: bold;
+  color: var(--green-light);
+  margin-right: 0.4rem;
+}
+
+.debug-backstory {
+  font-size: 0.67rem;
+  color: #6ab;
+  margin-top: 0.12rem;
+  line-height: 1.4;
+}
+
+/* ============================================================
+   Night Log — NPC Speech
+   ============================================================ */
+.night-log-entry.npc-speech {
+  color: #80c8e8;
+  font-style: italic;
+  font-size: 0.78rem;
+  padding-left: 0.5rem;
+  border-left: 2px solid #446;
+}
+
+/* ============================================================
+   Rich Result Screen
+   ============================================================ */
+#gameover-screen {
+  display: block;
+  overflow-y: auto;
+}
+
+.result-container {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem 3rem;
+  overflow-y: auto;
+  max-height: 100vh;
+}
+
+.result-container > h2 {
+  font-family: var(--font-serif);
+  font-size: 2rem;
+  color: var(--gold);
+  text-align: center;
+  margin-bottom: 2rem;
+  text-shadow: var(--glow-gold);
+}
+
+.result-section {
+  margin-bottom: 2rem;
+}
+
+.result-section-title {
+  font-size: 0.8rem;
+  color: var(--gold);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border-gold);
+  padding-bottom: 0.4rem;
+  margin-bottom: 1rem;
+}
+
+.result-characters {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.result-char-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.result-char-card.is-human { border-color: var(--gold-dark); }
+
+.result-char-name {
+  font-weight: bold;
+  font-size: 1rem;
+  color: var(--text-primary);
+}
+
+.result-char-role {
+  font-size: 0.72rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 3px;
+  display: inline-block;
+  font-weight: bold;
+}
+.result-char-role.fugo { color: #e8c86a; background: rgba(200,168,75,0.15); }
+.result-char-role.heimin { color: #a0c4e0; background: rgba(100,160,220,0.15); }
+.result-char-role.hinmin { color: #c08060; background: rgba(180,100,60,0.15); }
+
+.result-char-rank { font-size: 0.72rem; color: var(--text-secondary); }
+.result-char-style { font-size: 0.72rem; color: var(--gold-dark); }
+
+.result-char-backstory {
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-top: 0.3rem;
+}
+
+.result-char-truewin {
+  font-size: 0.72rem;
+  color: #c080a0;
+  font-style: italic;
+  margin-top: 0.2rem;
+}
+
+.result-relationships {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.result-rel-item {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  padding: 0.35rem 0.6rem;
+  background: var(--bg-card);
+  border-radius: 4px;
+  line-height: 1.4;
+}
+.result-rel-from { color: var(--gold); font-weight: bold; }
+.result-rel-to { color: #a0c4e0; font-weight: bold; }
+
+.result-cheat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.result-cheat-item {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  padding: 0.5rem 0.8rem;
+  background: var(--bg-card);
+  border-radius: 4px;
+  border-left: 3px solid var(--border);
+  line-height: 1.5;
+}
+.result-cheat-item.big_success { border-left-color: var(--green); }
+.result-cheat-item.draw { border-left-color: var(--gold-dark); }
+.result-cheat-item.big_fail { border-left-color: var(--red); }
+
+.result-cheat-judgment { font-weight: bold; margin-right: 0.3rem; }
+.result-cheat-item.big_success .result-cheat-judgment { color: var(--green-light); }
+.result-cheat-item.draw .result-cheat-judgment { color: var(--gold); }
+.result-cheat-item.big_fail .result-cheat-judgment { color: var(--red-light); }
+
+.result-container > .btn-primary {
+  display: block;
+  margin: 1.5rem auto 0;
+  max-width: 200px;
+}
+
+/* ============================================================
+   Amnesia Panel (記憶の断片)
+   ============================================================ */
+.amnesia-panel {
+  background: linear-gradient(90deg, #0e0a1a, #0a0a14);
+  border-top: 1px solid #3a2a5a;
+}
+
+.amnesia-toggle-btn {
+  width: 100%;
+  padding: 0.45rem 0.8rem;
+  background: transparent;
+  color: #c8a0ff;
+  border: none;
+  font-size: 0.8rem;
+  cursor: pointer;
+  text-align: left;
+  transition: color 0.2s;
+}
+.amnesia-toggle-btn:hover { color: #e8c8ff; }
+
+#amnesia-count {
+  color: #e8c0ff;
+  font-weight: bold;
+}
+
+.amnesia-list {
+  padding: 0 0.8rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.amnesia-clue {
+  font-size: 0.78rem;
+  color: #c0a8e8;
+  padding: 0.3rem 0.5rem;
+  background: rgba(80, 40, 120, 0.2);
+  border-left: 2px solid #6040a0;
+  border-radius: 0 3px 3px 0;
+  line-height: 1.5;
+  font-style: italic;
+}
+
+.amnesia-num {
+  font-size: 0.65rem;
+  color: #8060c0;
+  margin-right: 0.4rem;
+  font-style: normal;
+}
+
+/* ============================================================
+   Result Screen — World Setting
+   ============================================================ */
+.result-world-header {
+  background: var(--bg-card);
+  border: 1px solid #3a2a5a;
+  border-radius: var(--radius);
+  padding: 1rem 1.2rem;
+  margin-bottom: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.result-ws-title {
+  font-family: var(--font-serif);
+  font-size: 1.2rem;
+  color: var(--gold);
+  font-weight: bold;
+}
+
+.result-ws-location {
+  font-size: 0.85rem;
+  color: #a0c8e8;
+}
+
+.result-ws-context {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.result-ws-events ul {
+  list-style: disc;
+  padding-left: 1.2rem;
+  margin-top: 0.2rem;
+}
+
+.result-ws-events li,
+.result-ws-label {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin: 0.15rem 0;
+}
+
+.result-ws-label {
+  color: var(--gold-dark);
+  font-weight: bold;
+  display: block;
+  margin-bottom: 0.2rem;
+}
+
+.result-ws-factions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.result-ws-faction {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  padding-left: 0.5rem;
+  border-left: 2px solid var(--border-gold);
+}
+
+.result-full-incident {
+  background: rgba(10, 8, 20, 0.6);
+  border: 1px solid #2a2038;
+  border-radius: var(--radius);
+  padding: 1rem 1.2rem;
+}
+
+.result-incident-label {
+  font-size: 0.72rem;
+  color: var(--gold-dark);
+  text-align: center;
+  letter-spacing: 0.15em;
+  margin-bottom: 0.7rem;
+  text-transform: uppercase;
+}
+
+.result-incident-body {
+  font-size: 0.83rem;
+  color: var(--text-secondary);
+  line-height: 1.8;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ============================================================
+   Result Screen — Player True Backstory
+   ============================================================ */
+.result-player-secret {
+  background: linear-gradient(135deg, rgba(80,40,120,0.15), rgba(40,20,60,0.15));
+  border: 1px solid #6040a0;
+  border-radius: var(--radius);
+  padding: 1rem 1.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.result-secret-body {
+  font-size: 0.88rem;
+  color: #d0b8f8;
+  line-height: 1.7;
+  font-style: italic;
+}
+
+.result-secret-clues-title {
+  font-size: 0.75rem;
+  color: #8060c0;
+  margin-top: 0.4rem;
+  font-weight: bold;
+}
+
+.result-secret-clue {
+  font-size: 0.78rem;
+  color: #a888e0;
+  padding: 0.2rem 0.4rem;
+  border-left: 2px solid #6040a0;
+  font-style: italic;
+}

@@ -374,6 +374,8 @@ def execute_hanging(state: GameState, target_id: str) -> GameState:
             text=f"【処刑】{player.name}が吊られました。手札が公開されます。",
             turn=state.day_number,
         ))
+    # Check for victory conditions triggered by this hanging (martyr, revenge_on, beat_target)
+    state = check_instant_victories(state)
     return state
 
 
@@ -417,60 +419,104 @@ def transition_to_day(state: GameState) -> GameState:
 # Victory condition checks
 # ─────────────────────────────────────────────
 
-def check_victory(state: GameState) -> GameState:
-    """Check if game is over and determine winners."""
-    alive = state.alive_players()
+def check_instant_victories(state: GameState) -> GameState:
+    """Check victory conditions that can trigger mid-game (not just at final night end).
+    Called after: any hanging, any player going out, any revolution.
+    """
+    if state.game_over:
+        return state
 
-    # Game ends if 1 or fewer alive players have cards
+    new_winners = []
+    for player in state.players:
+        if player.id in state.winner_ids:
+            continue  # already a winner
+        vc = player.victory_condition
+        tw = player.true_win
+
+        # ── Public victory condition ──────────────────────────
+        if vc.type == "first_out":
+            if state.out_order and state.out_order[0] == player.id:
+                new_winners.append(player.id)
+
+        elif vc.type == "revolution":
+            if state.revolution_active:
+                new_winners.append(player.id)
+
+        elif vc.type == "beat_target" and vc.target_npc_id:
+            target = state.get_player(vc.target_npc_id)
+            if target:
+                if target.is_hanged:
+                    new_winners.append(player.id)
+                elif (target.id in state.out_order and player.id in state.out_order
+                      and state.out_order.index(player.id) < state.out_order.index(target.id)):
+                    new_winners.append(player.id)
+
+        elif vc.type == "help_target" and vc.target_npc_id:
+            target = state.get_player(vc.target_npc_id)
+            if target and not target.is_hanged and state.out_order and state.out_order[0] == target.id:
+                new_winners.append(player.id)
+
+        # ── True (hidden) win condition ───────────────────────
+        if tw:
+            if tw.type == "revenge_on" and tw.target_id:
+                t = state.get_player(tw.target_id)
+                if t and (t.is_hanged or (
+                    t.id in state.out_order and player.id in state.out_order
+                    and state.out_order.index(player.id) < state.out_order.index(t.id)
+                )):
+                    if player.id not in new_winners:
+                        new_winners.append(player.id)
+
+            elif tw.type == "protect" and tw.target_id:
+                t = state.get_player(tw.target_id)
+                if t and not t.is_hanged and state.out_order and state.out_order[0] == t.id:
+                    if player.id not in new_winners:
+                        new_winners.append(player.id)
+
+            elif tw.type == "climber":
+                if state.out_order and state.out_order[0] == player.id:
+                    if player.id not in new_winners:
+                        new_winners.append(player.id)
+
+            elif tw.type == "martyr":
+                if player.is_hanged and player.id not in new_winners:
+                    new_winners.append(player.id)
+
+    if new_winners:
+        state.winner_ids.extend(new_winners)
+        state.game_over = True
+
+    return state
+
+
+def check_victory(state: GameState) -> GameState:
+    """Check if game is over at night end. First checks instant victories, then end-game fallback."""
+    # Always check mid-game instant conditions first
+    state = check_instant_victories(state)
+    if state.game_over:
+        return state
+
+    # Game ends only if ≤1 active player still has cards
+    alive = state.alive_players()
     players_with_cards = [p for p in alive if not p.is_out()]
     if len(players_with_cards) > 1:
         return state  # game continues
 
-    winners = []
-    for player in state.players:
-        vc = player.victory_condition
+    # Final fallback: class_default — anyone not hanged shares the win
+    if not state.winner_ids:
+        for player in state.players:
+            if not player.is_hanged and player.id not in state.winner_ids:
+                state.winner_ids.append(player.id)
 
-        if vc.type == "first_out":
-            # Win by being first to discard all cards
-            if state.out_order and state.out_order[0] == player.id:
-                winners.append(player.id)
-
-        elif vc.type == "revolution":
-            # Win if revolution was triggered at least once
-            if state.revolution_active:
-                winners.append(player.id)
-
-        elif vc.type == "beat_target":
-            # Win if target was hanged or finished after you
-            target = state.get_player(vc.target_npc_id)
-            if target and target.is_hanged:
-                winners.append(player.id)
-            elif target and target.id in state.out_order and player.id in state.out_order:
-                if state.out_order.index(player.id) < state.out_order.index(target.id):
-                    winners.append(player.id)
-
-        elif vc.type == "help_target":
-            # Win if target finishes first or survives to end
-            target = state.get_player(vc.target_npc_id)
-            if target and not target.is_hanged:
-                if state.out_order and state.out_order[0] == target.id:
-                    winners.append(player.id)
-
-    if winners:
+    if state.winner_ids:
         state.game_over = True
-        state.winner_ids = winners
 
     return state
 
 
 def check_revolution_victory(state: GameState) -> GameState:
-    """Called when revolution triggers — check revolution-type victory conditions."""
-    for player in state.players:
-        if player.victory_condition.type == "revolution" and player.id not in state.winner_ids:
-            state.winner_ids.append(player.id)
-    if state.winner_ids:
-        state.game_over = True
-    return state
+    """Called when revolution triggers — delegates to check_instant_victories."""
+    return check_instant_victories(state)
 
 
 # ─────────────────────────────────────────────
@@ -536,6 +582,14 @@ def apply_cheat_effect(state: GameState, effect: CheatEffect) -> GameState:
             target.skip_next_turn = True
 
     # peek_hand and no_effect: no state change needed
+
+    # Over-defense penalty: 防御者 (target) にもペナルティ
+    if effect.defender_penalty == "reveal_card":
+        if target:
+            target.hand_revealed = True
+    elif effect.defender_penalty == "skip_turn":
+        if target:
+            target.skip_next_turn = True
 
     state.cheat_log.append(effect)
     return state

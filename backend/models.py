@@ -82,6 +82,10 @@ class CheatEffect(BaseModel):
     target_id: str
     card_index: Optional[int] = None
     story: str  # AI生成ナレーション
+    judgment: Literal["big_success", "draw", "big_fail"] = "big_success"
+    # draw=失敗だがバレない / big_fail=失敗かつ正体バレ
+    defender_penalty: Optional[Literal["reveal_card", "skip_turn"]] = None
+    # 過剰防衛ペナルティ（target_id の相手に効果）
 
 
 class PendingCheat(BaseModel):
@@ -90,6 +94,12 @@ class PendingCheat(BaseModel):
     target_id: str
     method: str   # ズル手口（ターゲットには非公開）
     hint: str     # ターゲットへのぼんやりしたヒント
+
+
+class TrueWinCondition(BaseModel):
+    type: Literal["revenge_on", "protect", "climber", "martyr", "class_default"]
+    target_id: Optional[str] = None   # revenge_on / protect のとき
+    description: str = ""
 
 
 class VictoryCondition(BaseModel):
@@ -119,6 +129,8 @@ class Character(BaseModel):
     cheat_used_this_night: bool = False
     hand_revealed: bool = False   # ズル効果で手札が全員に見える
     skip_next_turn: bool = False  # ズル効果で次ターンスキップ
+    argument_style: str = ""      # 慎重派/扇動者/論理派/便乗派/狂信者
+    true_win: Optional["TrueWinCondition"] = None  # 真の勝利条件
 
     def hand_count(self) -> int:
         return len(self.hand)
@@ -160,6 +172,10 @@ class GameState(BaseModel):
     night_cheat_phase_done: bool = False # チートフェーズ完了フラグ
     pending_cheat: Optional[PendingCheat] = None  # 人間が防御すべきNPCのズル
     cheat_log: List[CheatEffect] = Field(default_factory=list)  # 解決済みチート記録
+    night_situation: str = ""  # 夜の環境テキスト（夜移行時に生成）
+    investigation_notes: List[str] = Field(default_factory=list)  # 昼フェーズの捜査メモ
+    world_setting: dict = Field(default_factory=dict)  # 共有ワールド設定（地名・事件・派閥）
+    amnesia_clues: List[str] = Field(default_factory=list)  # プレイヤーの記憶の断片（会話中に解放）
 
     def get_player(self, player_id: str) -> Optional[Character]:
         for p in self.players:

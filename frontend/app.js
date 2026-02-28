@@ -10,6 +10,9 @@ let playerId = 'player_human';
 let gameState = null;
 let selectedCards = new Set();  // indices in hand
 let myVoteTarget = null;
+let godEyeMode = localStorage.getItem('godEyeMode') === 'true';
+let hintsVisible = false;
+let ghostAdvanceTimer = null;
 
 // ─── DOM refs ────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -113,12 +116,25 @@ function renderAll() {
   updateHeader();
   updateRevolutionBanner();
 
+  // Ghost mode banner
+  if (gameState.is_ghost_mode) {
+    $('ghost-mode-banner').classList.remove('hidden');
+  } else {
+    $('ghost-mode-banner').classList.add('hidden');
+  }
+
   if (gameState.phase === 'day') {
+    // Hide night situation banner during day
+    $('night-situation-banner').classList.add('hidden');
     showPhase('day');
     renderDayPhase();
   } else {
     showPhase('night');
     renderNightPhase();
+    // Ghost mode: auto-advance NPC turns
+    if (gameState.is_ghost_mode) {
+      startGhostAutoAdvance();
+    }
   }
 }
 
@@ -164,26 +180,44 @@ function renderDayPhase() {
   renderPlayersList();
   renderChatLog();
   renderVoteList();
+  renderInvestigationNotes();
+  renderAmnesiaClues();
 }
 
 function renderPlayersList() {
   const container = $('players-list');
   container.innerHTML = '';
+  const roleMap = { fugo: '富豪', heimin: '平民', hinmin: '貧民' };
   gameState.players.forEach(p => {
     const div = document.createElement('div');
     div.className = `player-card${p.is_human ? ' is-human' : ''}${p.is_hanged ? ' hanged' : ''}${p.is_out ? ' out' : ''}`;
-    const roleMap = { fugo: '富豪', heimin: '平民', hinmin: '貧民' };
-    const roleLabel = p.role ? roleMap[p.role] : '?';
-    const roleBadge = p.role
-      ? `<span class="player-role-badge ${p.role}">${roleLabel}</span>`
+    const displayRole = p._debug_role || p.role;
+    const roleLabel = displayRole ? roleMap[displayRole] : '?';
+    const roleBadge = displayRole
+      ? `<span class="player-role-badge ${displayRole}">${roleLabel}</span>`
       : '<span class="player-role-badge">?</span>';
     div.innerHTML = `
       <div class="player-name">${p.name}${p.is_human ? ' ★' : ''}${roleBadge}</div>
       <div class="player-cards-count">手札: ${p.hand_count}枚${p.is_hanged ? ' 【吊】' : ''}${p.is_out ? ' 【上がり】' : ''}</div>
     `;
+    // God eye mode overlay
+    if (godEyeMode && p._debug_role && !p.is_human) {
+      const debugDiv = document.createElement('div');
+      debugDiv.className = 'debug-overlay';
+      const twDesc = p._debug_true_win ? escHtml(p._debug_true_win.description || '') : '';
+      debugDiv.innerHTML = `
+        <span class="debug-role">${roleMap[p._debug_role] || p._debug_role}</span>
+        ${p._debug_backstory ? `<div class="debug-backstory">${escHtml(p._debug_backstory)}</div>` : ''}
+        ${twDesc ? `<div class="debug-backstory">目標: ${twDesc}</div>` : ''}
+      `;
+      div.appendChild(debugDiv);
+    }
     container.appendChild(div);
   });
 }
+
+// baton info keyed by speaker_id for the latest NPC responses
+let lastBatonMap = {};  // npc_id -> {baton_target_id, baton_action}
 
 function renderChatLog() {
   const log = $('chat-log');
@@ -195,7 +229,16 @@ function renderChatLog() {
     const cls = msg.speaker_id === 'system' ? 'system' : msg.speaker_id === playerId ? 'human' : 'npc';
     div.className = `chat-msg ${cls}`;
     if (msg.speaker_id !== 'system') {
-      div.innerHTML = `<div class="chat-speaker">${msg.speaker_name}</div>${escHtml(msg.text)}`;
+      let inner = `<div class="chat-speaker">${msg.speaker_name}</div>${escHtml(msg.text)}`;
+      // Append baton indicator if available for this NPC
+      const baton = lastBatonMap[msg.speaker_id];
+      if (baton && baton.baton_target_id) {
+        const targetPlayer = gameState.players.find(p => p.id === baton.baton_target_id);
+        const targetName = targetPlayer ? targetPlayer.name : baton.baton_target_id;
+        const actionLabel = { question: '質問', rebuttal: '反論要求', agreement_request: '同意要求' }[baton.baton_action] || baton.baton_action;
+        inner += `<span class="chat-baton">→ ${targetName} への${actionLabel}</span>`;
+      }
+      div.innerHTML = inner;
     } else {
       div.textContent = msg.text;
     }
@@ -222,6 +265,12 @@ function renderVoteList() {
   });
 }
 
+// Goto result button
+$('goto-result-btn').addEventListener('click', async () => {
+  if (!gameId) return;
+  await renderGameOver();
+});
+
 // Chat
 $('chat-send-btn').addEventListener('click', sendChat);
 $('chat-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
@@ -241,6 +290,30 @@ async function sendChat() {
     });
     const data = await res.json();
     gameState.chat_history = data.chat_history;
+    // Store baton info from latest NPC responses
+    if (data.npc_responses) {
+      data.npc_responses.forEach(r => {
+        if (r.baton_target_id) {
+          lastBatonMap[r.npc_id] = { baton_target_id: r.baton_target_id, baton_action: r.baton_action };
+        } else {
+          delete lastBatonMap[r.npc_id];
+        }
+      });
+    }
+    // Update investigation notes
+    if (data.investigation_notes) {
+      gameState.investigation_notes = data.investigation_notes;
+      renderInvestigationNotes();
+    }
+    // Update amnesia clues — auto-expand panel on first new clue
+    if (data.amnesia_clues) {
+      const prevCount = (gameState.amnesia_clues || []).length;
+      gameState.amnesia_clues = data.amnesia_clues;
+      renderAmnesiaClues();
+      if (data.amnesia_clues.length > prevCount) {
+        $('amnesia-list').classList.remove('hidden');  // auto-open on new clue
+      }
+    }
     renderChatLog();
   } catch (e) {
     console.error(e);
@@ -316,6 +389,13 @@ async function finalizeVote() {
       alert(`${data.hanged_player.name}が処刑されました。\n役職: ${roleLabel(data.hanged_player.role)}\n勝利条件: ${data.hanged_player.victory_condition}`);
     }
 
+    // Show night situation banner
+    if (data.night_situation) {
+      const banner = $('night-situation-banner');
+      $('night-situation-text').textContent = data.night_situation;
+      banner.classList.remove('hidden');
+    }
+
     // Log any NPC vs NPC cheat results
     if (data.npc_cheat_results && data.npc_cheat_results.length > 0) {
       data.npc_cheat_results.forEach(r => {
@@ -326,6 +406,9 @@ async function finalizeVote() {
     myVoteTarget = null;
     selectedCards.clear();
     renderAll();
+
+    // If instant victory fired (martyr/revenge etc.), stop here — result screen is already shown
+    if (gameState.game_over) return;
 
     // Route to cheat phase
     if (data.pending_cheat) {
@@ -347,6 +430,15 @@ async function finalizeVote() {
 let nightLog = [];
 
 function renderNightPhase() {
+  // Show night situation banner if available
+  const situationBanner = $('night-situation-banner');
+  if (gameState.night_situation) {
+    $('night-situation-text').textContent = gameState.night_situation;
+    situationBanner.classList.remove('hidden');
+  } else {
+    situationBanner.classList.add('hidden');
+  }
+
   renderNightPlayersList();
   renderTableCards();
   renderPlayerHand();
@@ -437,6 +529,10 @@ function addNightLogEntries(npcActions) {
     const cardsStr = action.cards.length > 0
       ? action.cards.map(c => c.display).join(' ')
       : '';
+    // Show NPC speech before the action line
+    if (action.speech) {
+      nightLog.push({ type: 'npc-speech', text: `${action.name}:「${action.speech}」` });
+    }
     if (action.action === 'pass') {
       nightLog.push({ type: 'pass', text: `${action.name}: パス` });
     } else {
@@ -511,11 +607,7 @@ async function playCards() {
 
     if (data.npc_actions) addNightLogEntries(data.npc_actions);
 
-    renderAll();
-
-    if (gameState.game_over) {
-      setTimeout(renderGameOver, 800);
-    }
+    renderAll();  // handles game_over → renderGameOver internally
   } catch (e) {
     console.error(e);
     alert('エラー: ' + e.message);
@@ -542,11 +634,7 @@ async function passTurn() {
     nightLog.push({ type: 'pass', text: 'あなた: パス' });
     if (data.npc_actions) addNightLogEntries(data.npc_actions);
 
-    renderAll();
-
-    if (gameState.game_over) {
-      setTimeout(renderGameOver, 800);
-    }
+    renderAll();  // handles game_over → renderGameOver internally
   } catch (e) {
     console.error(e);
   }
@@ -645,12 +733,14 @@ $('defense-submit-btn').addEventListener('click', async () => {
   const defense = $('defense-method').value.trim();
   if (!defense) { alert('対策を入力してください'); return; }
 
+  const defenseCategory = $('defense-category').value;
+
   $('defense-submit-btn').disabled = true;
   try {
     const res = await fetch(`${API}/api/game/cheat-defend`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ game_id: gameId, defender_id: playerId, defense_method: defense }),
+      body: JSON.stringify({ game_id: gameId, defender_id: playerId, defense_method: defense, defense_category: defenseCategory }),
     });
     const data = await res.json();
     if (!res.ok) { alert(data.detail || 'エラー'); return; }
@@ -688,47 +778,188 @@ async function completeCheatPhase() {
       body: JSON.stringify({ game_id: gameId }),
     });
     const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'cheat-phase-complete failed');
     gameState = data.state;
 
     if (data.npc_actions && data.npc_actions.length > 0) {
       addNightLogEntries(data.npc_actions);
     }
 
-    renderAll();
-
-    if (gameState.game_over) {
-      setTimeout(renderGameOver, 800);
-    }
+    renderAll();  // handles game_over internally
   } catch (e) {
     console.error(e);
-    renderAll();
+    if (gameState) renderAll();
   }
 }
 
-// ─── Game Over ───────────────────────────────────────────────
-function renderGameOver() {
-  const winners = gameState.winner_ids || [];
-  const titleEl = $('gameover-title');
-  const isWinner = winners.includes(playerId);
+// ─── Game Over (Rich Result) ──────────────────────────────────
+async function renderGameOver() {
+  console.log('[renderGameOver] gameId:', gameId, 'gameState:', gameState);
+  showScreen('gameover');
 
+  const isWinner = (gameState.winner_ids || []).includes(playerId);
+  const titleEl = $('gameover-title');
   titleEl.textContent = isWinner ? '🏆 勝利！' : '敗北...';
   titleEl.style.color = isWinner ? '#c8a84b' : '#c0392b';
 
-  const winnersEl = $('gameover-winners');
-  winnersEl.innerHTML = '';
-  if (winners.length > 0) {
-    winners.forEach(wid => {
-      const p = gameState.players.find(p => p.id === wid);
-      const div = document.createElement('div');
-      div.className = `winner-item${wid === playerId ? ' you' : ''}`;
-      div.textContent = `${p ? p.name : wid}${wid === playerId ? ' (あなた)' : ''}`;
-      winnersEl.appendChild(div);
-    });
-  } else {
-    winnersEl.innerHTML = '<p class="muted">勝者なし</p>';
+  $('result-characters').innerHTML = '<span class="muted">読み込み中...</span>';
+  $('result-relationships').innerHTML = '';
+  $('result-cheat-log').innerHTML = '';
+  $('result-world-header').innerHTML = '<span class="muted">読み込み中...</span>';
+  $('result-full-incident').innerHTML = '';
+  $('result-player-secret').innerHTML = '';
+
+  try {
+    const url = `${API}/api/game/result?game_id=${gameId}`;
+    console.log('[renderGameOver] Fetching:', url);
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    }
+    const data = await res.json();
+    console.log('[renderGameOver] Got data:', data);
+    renderResultWorldSetting(data);
+    renderResultPlayerSecret(data);
+    renderResultCharacters(data);
+    renderResultRelationships(data);
+    renderResultCheatLog(data);
+  } catch (e) {
+    console.error('[renderGameOver] Error:', e);
+    $('result-characters').innerHTML = `<span class="muted">データ取得エラー: ${e.message}</span>`;
+    $('result-world-header').innerHTML = `<span class="muted">エラー: ${e.message}</span>`;
+  }
+}
+
+function renderResultWorldSetting(data) {
+  console.log('[renderResultWorldSetting] data.world_setting:', data.world_setting);
+  const ws = data.world_setting || {};
+  const headerEl = $('result-world-header');
+  const incidentEl = $('result-full-incident');
+
+  if (!ws.setting_name && !ws.location) {
+    headerEl.innerHTML = '<span class="muted">世界設定なし</span>';
+    console.warn('[renderResultWorldSetting] No world setting');
+    return;
   }
 
-  showScreen('gameover');
+  headerEl.innerHTML = `
+    <div class="result-ws-title">${escHtml(ws.setting_name || '')}</div>
+    <div class="result-ws-location">📍 ${escHtml(ws.location || '')}</div>
+    ${ws.context ? `<div class="result-ws-context">${escHtml(ws.context)}</div>` : ''}
+    ${(ws.key_events || []).length > 0 ? `
+      <div class="result-ws-events">
+        <span class="result-ws-label">共通の過去:</span>
+        <ul>${(ws.key_events || []).map(e => `<li>${escHtml(e)}</li>`).join('')}</ul>
+      </div>` : ''}
+    ${(ws.factions || []).length > 0 ? `
+      <div class="result-ws-factions">
+        <span class="result-ws-label">派閥:</span>
+        ${(ws.factions || []).map(f => `<span class="result-ws-faction">${escHtml(f.name)}: ${escHtml(f.description)}</span>`).join('')}
+      </div>` : ''}
+  `;
+
+  if (ws.full_incident) {
+    incidentEl.innerHTML = `
+      <div class="result-incident-label">— 事件の全貌 —</div>
+      <div class="result-incident-body">${escHtml(ws.full_incident)}</div>
+    `;
+  }
+}
+
+function renderResultPlayerSecret(data) {
+  const ws = data.world_setting || {};
+  const secret = ws.player_secret_backstory;
+  const clues = data.amnesia_clues || [];
+  const container = $('result-player-secret');
+
+  let html = '';
+  if (secret) {
+    html += `<div class="result-secret-body">${escHtml(secret)}</div>`;
+  } else {
+    html += '<span class="muted">記録なし</span>';
+  }
+  if (clues.length > 0) {
+    html += `<div class="result-secret-clues-title">あなたが思い出した断片 (${clues.length}件):</div>`;
+    html += clues.map(c => `<div class="result-secret-clue">🌀 ${escHtml(c)}</div>`).join('');
+  }
+  container.innerHTML = html;
+}
+
+function renderResultCharacters(data) {
+  console.log('[renderResultCharacters] data.characters:', data.characters);
+  const container = $('result-characters');
+  container.innerHTML = '';
+  const roleMap = { fugo: '富豪', heimin: '平民', hinmin: '貧民' };
+
+  if (!data.characters || data.characters.length === 0) {
+    container.innerHTML = '<span class="muted">キャラクターデータなし</span>';
+    console.warn('[renderResultCharacters] No characters found');
+    return;
+  }
+
+  (data.characters || []).forEach(char => {
+    const card = document.createElement('div');
+    card.className = `result-char-card${char.is_human ? ' is-human' : ''}`;
+    const rank = (data.out_order || []).indexOf(char.id);
+    const rankStr = rank >= 0 ? `上がり順位: ${rank + 1}位` : (char.is_hanged ? '【処刑】' : '');
+    const isWinner = (data.winner_ids || []).includes(char.id);
+    card.innerHTML = `
+      <div class="result-char-name">${escHtml(char.name)}${char.is_human ? ' ★' : ''}${isWinner ? ' 🏆' : ''}</div>
+      <div class="result-char-role ${char.role}">${roleMap[char.role] || char.role}</div>
+      <div class="result-char-rank">${escHtml(rankStr)}</div>
+      <div class="result-char-style">${escHtml(char.argument_style || '')}</div>
+      <div class="result-char-backstory">${escHtml(char.backstory || '')}</div>
+      ${char.true_win ? `<div class="result-char-truewin">真の目標: ${escHtml(char.true_win.description || '')}</div>` : ''}
+    `;
+    container.appendChild(card);
+  });
+}
+
+function renderResultRelationships(data) {
+  console.log('[renderResultRelationships] data.relationship_web:', data.relationship_web);
+  const container = $('result-relationships');
+  container.innerHTML = '';
+  const charMap = {};
+  (data.characters || []).forEach(c => { charMap[c.id] = c.name; });
+
+  const web = data.relationship_web || [];
+  if (web.length === 0) {
+    container.innerHTML = '<span class="muted">関係なし</span>';
+    console.warn('[renderResultRelationships] No relationships found');
+    return;
+  }
+  web.forEach(rel => {
+    const div = document.createElement('div');
+    div.className = 'result-rel-item';
+    const fromName = charMap[rel.from_id] || rel.from_id;
+    const toName = charMap[rel.to_id] || rel.to_id;
+    div.innerHTML = `<span class="result-rel-from">${escHtml(fromName)}</span> → <span class="result-rel-to">${escHtml(toName)}</span>: ${escHtml(rel.description)}`;
+    container.appendChild(div);
+  });
+}
+
+function renderResultCheatLog(data) {
+  console.log('[renderResultCheatLog] data.cheat_log:', data.cheat_log);
+  const container = $('result-cheat-log');
+  container.innerHTML = '';
+  const charMap = {};
+  (data.characters || []).forEach(c => { charMap[c.id] = c.name; });
+
+  const log = data.cheat_log || [];
+  if (log.length === 0) {
+    container.innerHTML = '<span class="muted">イカサマなし</span>';
+    console.warn('[renderResultCheatLog] No cheat log found');
+    return;
+  }
+  log.forEach(entry => {
+    const div = document.createElement('div');
+    div.className = `result-cheat-item ${entry.judgment}`;
+    const cheaterName = charMap[entry.cheater_id] || entry.cheater_id;
+    const targetName = charMap[entry.target_id] || entry.target_id;
+    const judgmentLabel = { big_success: '大成功', draw: '引き分け', big_fail: '大失敗' }[entry.judgment] || entry.judgment;
+    div.innerHTML = `<span class="result-cheat-judgment">[${judgmentLabel}]</span> ${escHtml(cheaterName)} → ${escHtml(targetName)}: ${escHtml(entry.story)}`;
+    container.appendChild(div);
+  });
 }
 
 $('restart-btn').addEventListener('click', () => {
@@ -738,8 +969,172 @@ $('restart-btn').addEventListener('click', () => {
   selectedCards.clear();
   myVoteTarget = null;
   nightLog = [];
+  lastBatonMap = {};
+  godEyeMode = false;
+  localStorage.removeItem('godEyeMode');
+  hintsVisible = false;
+  if (ghostAdvanceTimer) { clearTimeout(ghostAdvanceTimer); ghostAdvanceTimer = null; }
+  $('night-situation-banner').classList.add('hidden');
+  $('ghost-mode-banner').classList.add('hidden');
+  $('hints-panel').classList.add('hidden');
+  $('amnesia-list').classList.add('hidden');
+  $('debug-toggle-btn').classList.remove('active');
   showScreen('setup');
 });
+
+// ─── God Eye Mode ─────────────────────────────────────────────
+$('debug-toggle-btn').classList.toggle('active', godEyeMode);
+
+$('debug-toggle-btn').addEventListener('click', () => {
+  godEyeMode = !godEyeMode;
+  localStorage.setItem('godEyeMode', godEyeMode);
+  $('debug-toggle-btn').classList.toggle('active', godEyeMode);
+  if (godEyeMode && gameId) {
+    fetchAndApplyDebugState();
+  } else {
+    renderAll();
+  }
+});
+
+async function fetchAndApplyDebugState() {
+  if (!gameId) return;
+  try {
+    const res = await fetch(`${API}/api/game/debug-state?game_id=${gameId}`);
+    const data = await res.json();
+    // Apply debug fields to local gameState players
+    data.players.forEach(debugP => {
+      const p = gameState.players.find(gp => gp.id === debugP.id);
+      if (p) {
+        p._debug_role = debugP._debug_role;
+        p._debug_backstory = debugP._debug_backstory;
+        p._debug_true_win = debugP._debug_true_win;
+        if (debugP.hand) p.hand = debugP.hand;
+      }
+    });
+    renderAll();
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+// ─── Hints System ─────────────────────────────────────────────
+$('hints-toggle-btn').addEventListener('click', () => {
+  hintsVisible = !hintsVisible;
+  const panel = $('hints-panel');
+  if (hintsVisible) {
+    panel.classList.remove('hidden');
+    fetchHints();
+  } else {
+    panel.classList.add('hidden');
+  }
+});
+
+$('hints-refresh-btn').addEventListener('click', fetchHints);
+
+async function fetchHints() {
+  if (!gameId) return;
+  $('hints-list').innerHTML = '<span class="muted">生成中...</span>';
+  $('templates-list').innerHTML = '';
+  try {
+    const res = await fetch(`${API}/api/game/hints?game_id=${gameId}&player_id=${playerId}`);
+    if (!res.ok) { $('hints-list').innerHTML = '<span class="muted">昼フェーズのみ使えます</span>'; return; }
+    const data = await res.json();
+
+    const hintsEl = $('hints-list');
+    hintsEl.innerHTML = '';
+    (data.hints || []).forEach(h => {
+      const div = document.createElement('div');
+      div.className = 'hint-item';
+      div.textContent = h.text;
+      hintsEl.appendChild(div);
+    });
+
+    const templatesEl = $('templates-list');
+    templatesEl.innerHTML = '';
+    (data.templates || []).forEach(t => {
+      const btn = document.createElement('button');
+      btn.className = 'template-btn';
+      btn.textContent = t.label;
+      btn.title = t.message;
+      btn.addEventListener('click', () => {
+        $('chat-input').value = t.message;
+        $('chat-input').focus();
+      });
+      templatesEl.appendChild(btn);
+    });
+  } catch (e) {
+    console.error(e);
+    $('hints-list').innerHTML = '<span class="muted">ヒント生成エラー</span>';
+  }
+}
+
+// ─── Investigation Notes ──────────────────────────────────────
+$('notes-toggle-btn').addEventListener('click', () => {
+  $('notes-list').classList.toggle('hidden');
+});
+
+function renderInvestigationNotes() {
+  const notes = gameState.investigation_notes || [];
+  $('notes-count').textContent = notes.length;
+  const list = $('notes-list');
+  list.innerHTML = '';
+  notes.forEach(note => {
+    const div = document.createElement('div');
+    div.className = 'note-item';
+    div.textContent = note;
+    list.appendChild(div);
+  });
+}
+
+// ─── Amnesia Clues (記憶の断片) ───────────────────────────────
+$('amnesia-toggle-btn').addEventListener('click', () => {
+  $('amnesia-list').classList.toggle('hidden');
+});
+
+function renderAmnesiaClues() {
+  const clues = gameState.amnesia_clues || [];
+  $('amnesia-count').textContent = clues.length;
+  const list = $('amnesia-list');
+  list.innerHTML = '';
+  if (clues.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'muted';
+    empty.style.padding = '0.3rem 0.5rem';
+    empty.textContent = '— まだ何も思い出せない —';
+    list.appendChild(empty);
+    return;
+  }
+  clues.forEach((clue, i) => {
+    const div = document.createElement('div');
+    div.className = 'amnesia-clue';
+    div.innerHTML = `<span class="amnesia-num">${i + 1}</span>${escHtml(clue)}`;
+    list.appendChild(div);
+  });
+}
+
+// ─── Ghost Mode ───────────────────────────────────────────────
+function startGhostAutoAdvance() {
+  if (ghostAdvanceTimer) return;  // Already scheduled
+  ghostAdvanceTimer = setTimeout(async () => {
+    ghostAdvanceTimer = null;
+    if (!gameState || !gameState.is_ghost_mode || gameState.phase !== 'night') return;
+    try {
+      const res = await fetch(`${API}/api/game/ghost-advance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ game_id: gameId }),
+      });
+      const data = await res.json();
+      gameState = data.state;
+      if (data.npc_actions && data.npc_actions.length > 0) {
+        addNightLogEntries(data.npc_actions);
+      }
+      renderAll();
+    } catch (e) {
+      console.error(e);
+    }
+  }, 2000);
+}
 
 // ─── Helpers ─────────────────────────────────────────────────
 function escHtml(str) {

@@ -47,11 +47,23 @@
         <span class="header-role-label">あなたの役割:</span>
         <span class="header-role" id="header-role">—</span>
         <span class="header-cards" id="header-cards">手札: 0枚</span>
+        <button id="goto-result-btn" class="btn-goto-result" title="リザルトを見る">📋 リザルト</button>
+        <button id="debug-toggle-btn" class="btn-debug-toggle" title="神の目モード">👁</button>
       </div>
     </header>
 
     <!-- Revolution Banner -->
     <div id="revolution-banner" class="revolution-banner hidden">⚡ 革命中 — 強弱逆転！ ⚡</div>
+
+    <!-- Night Situation Banner -->
+    <div id="night-situation-banner" class="night-situation hidden">
+      <span id="night-situation-text"></span>
+    </div>
+
+    <!-- Ghost Mode Banner -->
+    <div id="ghost-mode-banner" class="ghost-mode-banner hidden">
+      👻 ゴーストモード — 観戦中。すべての真実が見えます
+    </div>
 
     <!-- Main Area -->
     <main class="game-main">
@@ -73,9 +85,23 @@
               <input type="text" id="chat-input" placeholder="発言する..." maxlength="200" />
               <button id="chat-send-btn" class="btn-secondary">送信</button>
             </div>
+            <button id="hints-toggle-btn" class="btn-secondary hints-toggle-btn">💡 ヒント表示</button>
+            <div id="hints-panel" class="hints-panel hidden">
+              <div class="hints-row" id="hints-list"></div>
+              <div class="templates-row" id="templates-list"></div>
+              <button id="hints-refresh-btn" class="btn-refresh-hints">↺ 更新</button>
+            </div>
             <div class="day-actions">
               <button id="collect-votes-btn" class="btn-secondary">NPCに投票させる</button>
               <button id="finalize-vote-btn" class="btn-danger">投票確定・処刑</button>
+            </div>
+            <div id="notes-panel" class="notes-panel">
+              <button id="notes-toggle-btn" class="notes-toggle-btn">📝 捜査メモ <span id="notes-count">0</span>件 ▾</button>
+              <div id="notes-list" class="notes-list hidden"></div>
+            </div>
+            <div id="amnesia-panel" class="amnesia-panel">
+              <button id="amnesia-toggle-btn" class="amnesia-toggle-btn">🌀 記憶の断片 <span id="amnesia-count">0</span>件 ▾</button>
+              <div id="amnesia-list" class="amnesia-list hidden"></div>
             </div>
           </section>
 
@@ -114,6 +140,14 @@
           <div class="cheat-box">
             <h3 class="cheat-title">⚠ 何かが起きる気配が…</h3>
             <p id="cheat-hint-text" class="cheat-hint"></p>
+            <label class="cheat-label">警戒カテゴリを選択（1つだけ）</label>
+            <select id="defense-category" class="cheat-select">
+              <option value="視覚">視覚（相手の手や表情を目で追う）</option>
+              <option value="聴覚">聴覚（物音・紙の擦れる音に集中）</option>
+              <option value="触覚">触覚（手札を強く握って離さない）</option>
+              <option value="場を監視">場（テーブル上のカードを監視）</option>
+              <option value="背後を警戒">背後（周囲の動きに目を光らせる）</option>
+            </select>
             <label class="cheat-label">対策を入力してください</label>
             <textarea id="defense-method" class="cheat-textarea" placeholder="例：カードをしっかり握って離さない…" rows="3"></textarea>
             <div class="cheat-actions">
@@ -181,11 +215,42 @@
     </main>
   </div>
 
-  <!-- ===== GAME OVER SCREEN ===== -->
+  <!-- ===== GAME OVER SCREEN (Rich Result) ===== -->
   <div id="gameover-screen" class="screen hidden">
-    <div class="gameover-container">
+    <div class="result-container">
       <h2 id="gameover-title">ゲーム終了</h2>
-      <div id="gameover-winners" class="gameover-winners"></div>
+
+      <!-- World Setting & True Story -->
+      <section class="result-section" id="result-world-section">
+        <h3 class="result-section-title">📖 世界設定 · 真相</h3>
+        <div id="result-world-header" class="result-world-header"></div>
+        <div id="result-full-incident" class="result-full-incident"></div>
+      </section>
+
+      <!-- Player's True Backstory Reveal -->
+      <section class="result-section" id="result-amnesia-section">
+        <h3 class="result-section-title">🌀 あなたの真の素性</h3>
+        <div id="result-player-secret" class="result-player-secret"></div>
+      </section>
+
+      <!-- Characters -->
+      <section class="result-section">
+        <h3 class="result-section-title">キャラクター一覧</h3>
+        <div id="result-characters" class="result-characters"></div>
+      </section>
+
+      <!-- Relationships -->
+      <section class="result-section">
+        <h3 class="result-section-title">関係図</h3>
+        <div id="result-relationships" class="result-relationships"></div>
+      </section>
+
+      <!-- Cheat Log -->
+      <section class="result-section">
+        <h3 class="result-section-title">イカサマ記録</h3>
+        <div id="result-cheat-log" class="result-cheat-log"></div>
+      </section>
+
       <button id="restart-btn" class="btn-primary">もう一度プレイ</button>
     </div>
   </div>
