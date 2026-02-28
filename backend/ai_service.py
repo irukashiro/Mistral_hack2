@@ -4,9 +4,11 @@ Mistral AI integration for:
 2. NPC speech generation during day phase
 3. NPC card play decisions during night phase
 """
+import asyncio
 import json
 import os
 import random
+import time
 import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
@@ -16,7 +18,7 @@ from models import (
     Card, Character, CheatEffect, CheatEffectType, GameState, PendingCheat,
     Role, TrueWinCondition, VictoryCondition, Relationship
 )
-from game_engine import get_valid_plays
+from game_engine import apply_cheat_effect, apply_pass, apply_play, get_valid_plays
 
 
 def get_client() -> Mistral:
@@ -24,6 +26,33 @@ def get_client() -> Mistral:
     if not api_key:
         raise ValueError("MISTRAL_API_KEY environment variable is not set")
     return Mistral(api_key=api_key)
+
+
+def _log_api_call(
+    state: Optional[GameState],
+    endpoint: str,
+    model: str,
+    prompt_summary: str,
+    response_summary: str,
+    latency_ms: int,
+):
+    """Append an API call log entry to state.debug_log if state is provided."""
+    if state is None:
+        return
+    state.debug_log.append({
+        "type": "api_call",
+        "actor": "system",
+        "actor_name": "Mistral API",
+        "reasoning": f"{model} → {endpoint}",
+        "detail": {
+            "endpoint": endpoint,
+            "model": model,
+            "prompt_summary": prompt_summary[:120],
+            "response_summary": response_summary[:120],
+            "latency_ms": latency_ms,
+        },
+        "turn": state.day_number if state else 0,
+    })
 
 
 # ─────────────────────────────────────────────
@@ -634,6 +663,7 @@ JSON形式:
   "baton_action": "question/rebuttal/agreement_request"
 }}"""
 
+    t0 = time.time()
     response = client.chat.complete(
         model="mistral-small-latest",
         messages=[
@@ -643,6 +673,7 @@ JSON形式:
         response_format={"type": "json_object"},
         temperature=0.85,
     )
+    latency = int((time.time() - t0) * 1000)
 
     content = response.choices[0].message.content
     try:
@@ -654,8 +685,10 @@ JSON形式:
         # Validate baton target is an actual alive NPC
         if baton_target and baton_target not in other_npc_ids:
             baton_target = None
+        _log_api_call(state, "npc_speech", "mistral-small", f"{npc.name} speech", speech[:80], latency)
         return {"speech": speech, "reasoning": reasoning, "baton_target_id": baton_target, "baton_action": baton_action}
     except Exception:
+        _log_api_call(state, "npc_speech", "mistral-small", f"{npc.name} speech", "parse_error", latency)
         return {"speech": content[:200], "reasoning": {}, "baton_target_id": None, "baton_action": "question"}
 
 
@@ -668,10 +701,9 @@ async def generate_npc_speeches_for_player_message(
     Generate responses from all NPCs to a player's message.
     Returns list of {"npc_id", "name", "text", "baton_target_id", "baton_action"}.
     """
-    responses = []
     npcs = [p for p in state.alive_players() if not p.is_human and not p.is_hanged]
 
-    for npc in npcs:
+    async def _gen(npc):
         result = await generate_npc_speech(
             npc=npc,
             state=state,
@@ -679,16 +711,17 @@ async def generate_npc_speeches_for_player_message(
             player_message=player_message,
             world_setting=world_setting,
         )
-        responses.append({
+        return {
             "npc_id": npc.id,
             "name": npc.name,
             "text": result["speech"],
             "reasoning": result.get("reasoning", {}),
             "baton_target_id": result["baton_target_id"],
             "baton_action": result["baton_action"],
-        })
+        }
 
-    return responses
+    responses = await asyncio.gather(*[_gen(npc) for npc in npcs])
+    return list(responses)
 
 
 # ─────────────────────────────────────────────
@@ -750,6 +783,7 @@ JSON形式:
 }}"""
 
     client = get_client()
+    t0 = time.time()
     response = client.chat.complete(
         model="mistral-small-latest",
         messages=[
@@ -759,6 +793,7 @@ JSON形式:
         response_format={"type": "json_object"},
         temperature=0.7,
     )
+    latency = int((time.time() - t0) * 1000)
 
     content = response.choices[0].message.content
     try:
@@ -766,6 +801,7 @@ JSON形式:
         action = data.get("action", "pass")
         speech = data.get("speech", "")
         reasoning = data.get("reasoning", "")
+        _log_api_call(state, "npc_play", "mistral-small", f"{npc.name} play decision", action, latency)
         if action == "pass":
             return None, "", reasoning
         play_index = data.get("play_index", 0)
@@ -773,6 +809,7 @@ JSON形式:
             return valid_plays[play_index], speech, reasoning
         return valid_plays[0], speech, reasoning  # fallback to first valid play
     except Exception:
+        _log_api_call(state, "npc_play", "mistral-small", f"{npc.name} play decision", "parse_error", latency)
         # Fallback: play a random valid move or pass
         if random.random() > 0.3:
             return random.choice(valid_plays), "", ""
@@ -802,7 +839,6 @@ async def run_npc_turns(
         # NPC's turn
         if current.is_hanged or current.is_out():
             # Auto-pass
-            from game_engine import apply_pass
             state, msg = apply_pass(state, current.id)
             actions.append({
                 "player_id": current.id,
@@ -815,7 +851,6 @@ async def run_npc_turns(
         else:
             cards, speech, reasoning = await decide_npc_play(current, state)
             if cards is None:
-                from game_engine import apply_pass
                 state, msg = apply_pass(state, current.id)
                 actions.append({
                     "player_id": current.id,
@@ -827,7 +862,6 @@ async def run_npc_turns(
                     "reasoning": reasoning,
                 })
             else:
-                from game_engine import apply_play
                 state, msg = apply_play(state, current.id, cards)
                 actions.append({
                     "player_id": current.id,
@@ -894,6 +928,7 @@ JSON:
 }}"""
 
     client = get_client()
+    t0 = time.time()
     response = client.chat.complete(
         model="mistral-small-latest",
         messages=[
@@ -903,18 +938,21 @@ JSON:
         response_format={"type": "json_object"},
         temperature=0.8,
     )
+    latency = int((time.time() - t0) * 1000)
 
     content = response.choices[0].message.content
     try:
         data = json.loads(content)
         target_id = data.get("target_id")
         reasoning = data.get("reasoning", "")
+        _log_api_call(state, "npc_vote", "mistral-small", f"{npc.name} vote", target_id or "none", latency)
         # Validate target exists and is not the NPC itself
         valid_ids = [p.id for p in candidates]
         if target_id in valid_ids:
             return target_id, reasoning
         return random.choice(valid_ids), reasoning
     except Exception:
+        _log_api_call(state, "npc_vote", "mistral-small", f"{npc.name} vote", "parse_error", latency)
         return random.choice([p.id for p in candidates]), ""
 
 
@@ -1143,8 +1181,6 @@ async def process_all_npc_cheats(
     - NPC vs Human: returns PendingCheat for human to respond
     Returns (updated_state, pending_cheat_or_None, list_of_resolved_effect_dicts)
     """
-    from game_engine import apply_cheat_effect
-
     hinmin_npcs = [
         p for p in state.alive_players()
         if not p.is_human and not p.cheat_used_this_night and p.role == Role.HINMIN

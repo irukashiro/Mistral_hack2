@@ -35,18 +35,27 @@ from game_engine import (
     apply_play,
     check_revolution_victory,
     execute_hanging,
+    init_relationship_matrix,
     initialize_game,
     check_victory,
     tally_votes,
     transition_to_day,
     transition_to_night,
+    update_all_character_states,
+    update_relationship_for_cheat,
+    update_relationship_for_vote,
 )
 from models import (
     Card,
     Character,
     ChatMessage,
+    ChatRequest,
+    CheatDefendRequest,
     CheatEffectType,
+    CheatInitiateRequest,
     FinalizeVoteResponse,
+    GameIdRequest,
+    GameIdWithPlayerRequest,
     GameState,
     PassRequest,
     PassResponse,
@@ -104,6 +113,7 @@ def _state_to_dict(
             "is_hanged": p.is_hanged,
             "is_out": p.is_out(),
             "hand_count": p.hand_count(),
+            "state": p.state,
             "victory_condition_description": p.victory_condition.description,
         }
         # Show role to: the player themselves, hanged players (revealed), or hidden mode
@@ -195,6 +205,7 @@ def _state_to_dict(
         "investigation_notes": state.investigation_notes,
         "amnesia_clues": state.amnesia_clues,
         "is_ghost_mode": is_ghost_mode,
+        "relationship_matrix": state.relationship_matrix if include_hidden else {},
         "debug_log": state.debug_log if include_hidden else [],
         "victory_reason": state.victory_reason,
     }
@@ -274,6 +285,10 @@ async def start_game(request: StartGameRequest):
 
     # 4. Save world setting to state
     state.world_setting = world_setting
+
+    # 5. Initialize relationship matrix and character states
+    state = init_relationship_matrix(state)
+    state = update_all_character_states(state)
 
     # Add to store
     game_store[state.game_id] = state
@@ -398,9 +413,9 @@ async def full_reveal(game_id: str):
 
 
 @app.post("/api/game/ghost-advance")
-async def ghost_advance(request: dict):
+async def ghost_advance(request: GameIdRequest):
     """Ghost mode: run NPC turns automatically so the hanged player can observe."""
-    game_id = request.get("game_id")
+    game_id = request.game_id
     state = game_store.get(game_id)
     if state is None:
         raise HTTPException(status_code=404, detail="ゲームが見つかりません")
@@ -418,11 +433,11 @@ async def ghost_advance(request: dict):
 
 
 @app.post("/api/game/chat")
-async def chat(request: dict):
+async def chat(request: ChatRequest):
     """Player sends a message; NPCs respond."""
-    game_id = request.get("game_id")
-    player_id = request.get("player_id", "player_human")
-    message = request.get("message", "")
+    game_id = request.game_id
+    player_id = request.player_id
+    message = request.message
 
     state = game_store.get(game_id)
     if state is None:
@@ -520,6 +535,7 @@ async def vote(request: VoteRequest):
         raise HTTPException(status_code=400, detail="自分自身には投票できません")
 
     state.votes[request.voter_id] = request.target_id
+    update_relationship_for_vote(state, request.voter_id, request.target_id)
 
     vote_counts = tally_votes(state.votes)
     return VoteResponse(
@@ -529,9 +545,9 @@ async def vote(request: VoteRequest):
 
 
 @app.post("/api/game/npc-votes")
-async def collect_npc_votes(request: dict):
+async def collect_npc_votes(request: GameIdRequest):
     """Trigger NPC voting decisions."""
-    game_id = request.get("game_id")
+    game_id = request.game_id
     state = game_store.get(game_id)
     if state is None:
         raise HTTPException(status_code=404, detail="ゲームが見つかりません")
@@ -545,6 +561,7 @@ async def collect_npc_votes(request: dict):
                 target_id, reasoning = await decide_npc_vote(npc, state)
                 if target_id:
                     state.votes[npc.id] = target_id
+                    update_relationship_for_vote(state, npc.id, target_id)
                     target = state.get_player(target_id)
                     npc_vote_info.append({
                         "voter": npc.name,
@@ -571,9 +588,9 @@ async def collect_npc_votes(request: dict):
 
 
 @app.post("/api/game/finalize-vote")
-async def finalize_vote(request: dict):
+async def finalize_vote(request: GameIdRequest):
     """Finalize voting, hang the player with most votes, transition to night."""
-    game_id = request.get("game_id")
+    game_id = request.game_id
     state = game_store.get(game_id)
     if state is None:
         raise HTTPException(status_code=404, detail="ゲームが見つかりません")
@@ -762,12 +779,12 @@ async def pass_turn(request: PassRequest):
 
 
 @app.post("/api/game/cheat-initiate")
-async def cheat_initiate(request: dict):
+async def cheat_initiate(request: CheatInitiateRequest):
     """Human player (hinmin) initiates a cheat against an NPC."""
-    game_id = request.get("game_id")
-    cheater_id = request.get("cheater_id", "player_human")
-    target_id = request.get("target_id")
-    method = request.get("method", "")
+    game_id = request.game_id
+    cheater_id = request.cheater_id
+    target_id = request.target_id
+    method = request.method
 
     state = game_store.get(game_id)
     if state is None:
@@ -792,6 +809,9 @@ async def cheat_initiate(request: dict):
         defense = await generate_npc_defense(target, "何かイカサマを感じる", state)
         effect = await judge_cheat(cheater, target, method, defense, state)
         state = apply_cheat_effect(state, effect)
+        is_big_fail = effect.judgment == "big_fail"
+        update_relationship_for_cheat(state, cheater_id, target_id, success=not is_big_fail)
+        state = update_all_character_states(state)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"イカサマ処理エラー: {str(e)}")
 
@@ -804,12 +824,12 @@ async def cheat_initiate(request: dict):
 
 
 @app.post("/api/game/cheat-defend")
-async def cheat_defend(request: dict):
+async def cheat_defend(request: CheatDefendRequest):
     """Human player defends against an NPC's pending cheat."""
-    game_id = request.get("game_id")
-    defender_id = request.get("defender_id", "player_human")
-    defense_method = request.get("defense_method", "")
-    defense_category = request.get("defense_category", "")
+    game_id = request.game_id
+    defender_id = request.defender_id
+    defense_method = request.defense_method
+    defense_category = request.defense_category
 
     state = game_store.get(game_id)
     if state is None:
@@ -829,6 +849,9 @@ async def cheat_defend(request: dict):
         effect = await judge_cheat(cheater, target, pending.method, defense_method, state,
                                    defense_category=defense_category)
         state = apply_cheat_effect(state, effect)
+        is_big_fail = effect.judgment == "big_fail"
+        update_relationship_for_cheat(state, pending.cheater_id, pending.target_id, success=not is_big_fail)
+        state = update_all_character_states(state)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"防御処理エラー: {str(e)}")
 
@@ -847,10 +870,10 @@ async def cheat_defend(request: dict):
 
 
 @app.post("/api/game/cheat-skip")
-async def cheat_skip(request: dict):
+async def cheat_skip(request: GameIdWithPlayerRequest):
     """Human player skips their cheat opportunity this night."""
-    game_id = request.get("game_id")
-    player_id = request.get("player_id", "player_human")
+    game_id = request.game_id
+    player_id = request.player_id
 
     state = game_store.get(game_id)
     if state is None:
@@ -864,9 +887,9 @@ async def cheat_skip(request: dict):
 
 
 @app.post("/api/game/cheat-phase-complete")
-async def cheat_phase_complete(request: dict):
+async def cheat_phase_complete(request: GameIdRequest):
     """Mark the cheat phase as done and start NPC card play turns."""
-    game_id = request.get("game_id")
+    game_id = request.game_id
 
     state = game_store.get(game_id)
     if state is None:
@@ -891,9 +914,9 @@ async def cheat_phase_complete(request: dict):
 
 
 @app.post("/api/game/end-night")
-async def end_night(request: dict):
+async def end_night(request: GameIdRequest):
     """Manually end the night phase and transition to day."""
-    game_id = request.get("game_id")
+    game_id = request.game_id
     state = game_store.get(game_id)
     if state is None:
         raise HTTPException(status_code=404, detail="ゲームが見つかりません")

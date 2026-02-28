@@ -157,7 +157,7 @@ AI が生成した共有世界設定・キャラクター・関係図を土台�
 | GET  | `/api/game/state` | ゲーム状態取得（ゴーストモード時は全情報開示） |
 | GET  | `/api/game/hints` | 戦略ヒント + 発言テンプレート生成（昼のみ） |
 | GET  | `/api/game/debug-state` | 神の目モード用：全情報開示 |
-| GET  | `/api/game/full-reveal` | リザルト用：世界設定・全キャラ・関係図・イカサマ記録 |
+| GET  | `/api/game/result` | リザルト用：世界設定・全キャラ・関係図・イカサマ記録 |
 | POST | `/api/game/chat` | 発言 → NPC応答 + 捜査メモ更新 + 記憶断片解放 |
 | POST | `/api/game/vote` | 投票記録 |
 | POST | `/api/game/npc-votes` | NPC 投票実行 |
@@ -171,7 +171,7 @@ AI が生成した共有世界設定・キャラクター・関係図を土台�
 | POST | `/api/game/ghost-advance` | ゴーストモード：NPCターンを強制進行 |
 | POST | `/api/game/end-night` | 夜フェーズを手動終了 |
 | GET  | `/api/game/list` | 稼働中ゲーム一覧（デバッグ） |
-| DELETE | `/api/game/{game_id}` | ゲーム削除 |
+| POST | `/api/game/{game_id}/delete` | ゲーム削除 |
 
 ---
 
@@ -180,10 +180,10 @@ AI が生成した共有世界設定・キャラクター・関係図を土台�
 ```
 Mistral_hack2/
 ├── backend/
-│   ├── main.py          # FastAPI エンドポイント（全15本）
+│   ├── main.py          # FastAPI エンドポイント（全19本）
 │   ├── game_engine.py   # 大富豪ロジック（純粋関数）+ 勝利判定
-│   ├── ai_service.py    # Mistral AI 連携（関数16本）
-│   ├── models.py        # Pydantic モデル（クラス18個）
+│   ├── ai_service.py    # Mistral AI 連携（関数20本）
+│   ├── models.py        # Pydantic モデル（クラス30個）
 │   └── requirements.txt
 ├── frontend/
 │   ├── index.html       # ゲーム画面（セットアップ / ゲーム / リザルト）

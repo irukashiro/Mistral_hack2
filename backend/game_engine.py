@@ -7,7 +7,8 @@ import uuid
 from typing import Dict, List, Optional, Tuple
 
 from models import (
-    Card, Character, CheatEffect, CheatEffectType, GameState, Role, Suit,
+    Card, Character, CharacterState, CheatEffect, CheatEffectType,
+    GameState, RelationshipValue, Role, Suit,
     NUMBER_STRENGTH, SUIT_STRENGTH, ChatMessage
 )
 
@@ -257,6 +258,7 @@ def apply_play(
     # Check night phase end
     state = _check_night_end(state)
 
+    state = update_all_character_states(state)
     return state, msg
 
 
@@ -376,6 +378,7 @@ def execute_hanging(state: GameState, target_id: str) -> GameState:
         ))
     # Check for victory conditions triggered by this hanging (martyr, revenge_on, beat_target)
     state = check_instant_victories(state)
+    state = update_all_character_states(state)
     return state
 
 
@@ -401,6 +404,7 @@ def transition_to_night(state: GameState) -> GameState:
     if alive_ids:
         state.current_turn = alive_ids[0]
 
+    state = update_all_character_states(state)
     return state
 
 
@@ -412,6 +416,7 @@ def transition_to_day(state: GameState) -> GameState:
     state.hanged_today = None
     # Deal new cards? No — in Daifugo cards persist. But for this game we re-deal each round
     # Actually in this game design, we do NOT re-deal. Cards persist until players go out.
+    state = update_all_character_states(state)
     return state
 
 
@@ -485,6 +490,7 @@ def check_instant_victories(state: GameState) -> GameState:
     if new_winners:
         state.winner_ids.extend(new_winners)
         state.game_over = True
+        state = update_all_character_states(state)
         # Build victory reason text
         reasons = []
         for pid in new_winners:
@@ -679,3 +685,122 @@ def get_valid_plays(hand: List[Card], table: List[Card], revolution_active: bool
                     valid.append(combo_list)
 
     return valid
+
+
+# ─────────────────────────────────────────────
+# Character state machine
+# ─────────────────────────────────────────────
+
+def compute_character_state(state: GameState, player: Character) -> int:
+    """Compute the appropriate CharacterState code for a player."""
+    if player.is_hanged:
+        return CharacterState.DEAD
+
+    if state.game_over and player.id in state.winner_ids:
+        return CharacterState.COMPLETE_VICTORY
+
+    if player.is_out():
+        return CharacterState.WON_ROUND
+
+    # Check if suspected (big_fail cheat exposure)
+    for entry in state.cheat_log:
+        if entry.cheater_id == player.id and entry.judgment == "big_fail":
+            return CharacterState.SUSPECTED
+
+    if state.phase == "day":
+        return CharacterState.IN_MEETING
+
+    # night phase — default to PLAYING
+    return CharacterState.PLAYING
+
+
+def update_all_character_states(state: GameState) -> GameState:
+    """Recalculate state code for every player."""
+    for player in state.players:
+        player.state = compute_character_state(state, player)
+    return state
+
+
+# ─────────────────────────────────────────────
+# Relationship matrix
+# ─────────────────────────────────────────────
+
+_ENEMY_KEYWORDS = ("敵", "憎", "復讐")
+_HOSTILE_KEYWORDS = ("警戒", "不信", "疑")
+_FRIENDLY_KEYWORDS = ("友", "好意")
+_TRUST_KEYWORDS = ("信頼", "親密")
+_SECRET_KEYWORDS = ("秘密", "共犯")
+
+
+def _keyword_to_value(description: str) -> int:
+    """Convert relationship description text to a numeric value via keyword matching."""
+    for kw in _SECRET_KEYWORDS:
+        if kw in description:
+            return RelationshipValue.SECRET_SHARED
+    for kw in _TRUST_KEYWORDS:
+        if kw in description:
+            return RelationshipValue.TRUST
+    for kw in _FRIENDLY_KEYWORDS:
+        if kw in description:
+            return RelationshipValue.FRIENDLY
+    for kw in _ENEMY_KEYWORDS:
+        if kw in description:
+            return RelationshipValue.ENEMY
+    for kw in _HOSTILE_KEYWORDS:
+        if kw in description:
+            return RelationshipValue.HOSTILE
+    return RelationshipValue.NEUTRAL
+
+
+def init_relationship_matrix(state: GameState) -> GameState:
+    """Build the initial N×N relationship matrix from AI-generated text relationships."""
+    ids = [p.id for p in state.players]
+    matrix: Dict[str, Dict[str, int]] = {pid: {oid: 0 for oid in ids} for pid in ids}
+
+    for player in state.players:
+        for rel in player.relationships:
+            if rel.target_id in matrix[player.id]:
+                matrix[player.id][rel.target_id] = _keyword_to_value(rel.description)
+
+    state.relationship_matrix = matrix
+    return state
+
+
+def _clamp_rel(value: int) -> int:
+    """Clamp relationship value to [-2, 3]."""
+    return max(RelationshipValue.ENEMY, min(RelationshipValue.SECRET_SHARED, value))
+
+
+def update_relationship_for_vote(state: GameState, voter_id: str, target_id: str) -> GameState:
+    """When voter votes to hang target, the target's feeling toward voter decreases."""
+    matrix = state.relationship_matrix
+    if target_id in matrix and voter_id in matrix[target_id]:
+        matrix[target_id][voter_id] = _clamp_rel(matrix[target_id][voter_id] - 1)
+    return state
+
+
+def update_relationship_for_cheat(
+    state: GameState, cheater_id: str, target_id: str, success: bool
+) -> GameState:
+    """Update relationships after a cheat attempt.
+    success=True: target's feeling toward cheater decreases.
+    success=False (big_fail): everyone's feeling toward cheater decreases.
+    """
+    matrix = state.relationship_matrix
+    if success:
+        if target_id in matrix and cheater_id in matrix[target_id]:
+            matrix[target_id][cheater_id] = _clamp_rel(matrix[target_id][cheater_id] - 1)
+    else:
+        # big_fail — all players' feelings toward cheater decrease
+        for pid in matrix:
+            if pid != cheater_id and cheater_id in matrix[pid]:
+                matrix[pid][cheater_id] = _clamp_rel(matrix[pid][cheater_id] - 1)
+    return state
+
+
+def is_friend(state: GameState, a_id: str, b_id: str) -> bool:
+    """Check if player a considers player b a friend (value >= 1)."""
+    matrix = state.relationship_matrix
+    if a_id in matrix and b_id in matrix[a_id]:
+        return matrix[a_id][b_id] >= RelationshipValue.FRIENDLY
+    return False
