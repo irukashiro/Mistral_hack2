@@ -648,14 +648,15 @@ JSON形式:
     try:
         data = json.loads(content)
         speech = data.get("speech", "...")
+        reasoning = data.get("reasoning", {})
         baton_target = data.get("baton_target_id")
         baton_action = data.get("baton_action", "question")
         # Validate baton target is an actual alive NPC
         if baton_target and baton_target not in other_npc_ids:
             baton_target = None
-        return {"speech": speech, "baton_target_id": baton_target, "baton_action": baton_action}
+        return {"speech": speech, "reasoning": reasoning, "baton_target_id": baton_target, "baton_action": baton_action}
     except Exception:
-        return {"speech": content[:200], "baton_target_id": None, "baton_action": "question"}
+        return {"speech": content[:200], "reasoning": {}, "baton_target_id": None, "baton_action": "question"}
 
 
 async def generate_npc_speeches_for_player_message(
@@ -682,6 +683,7 @@ async def generate_npc_speeches_for_player_message(
             "npc_id": npc.id,
             "name": npc.name,
             "text": result["speech"],
+            "reasoning": result.get("reasoning", {}),
             "baton_target_id": result["baton_target_id"],
             "baton_action": result["baton_action"],
         })
@@ -701,18 +703,18 @@ NPC_PLAY_SYSTEM = """あなたはカードゲーム「大富豪×人狼」のNPC
 async def decide_npc_play(
     npc: Character,
     state: GameState,
-) -> Tuple[Optional[List[Card]], str]:
+) -> Tuple[Optional[List[Card]], str, str]:
     """
     Decide what cards an NPC will play (or None to pass).
-    Returns (list of Card objects or None for pass, speech string).
+    Returns (list of Card objects or None for pass, speech string, reasoning string).
     """
     if npc.is_hanged:
-        return None, ""  # Hanged players always pass
+        return None, "", ""  # Hanged players always pass
 
     valid_plays = get_valid_plays(npc.hand, state.table, state.revolution_active)
 
     if not valid_plays:
-        return None, ""  # No valid plays, must pass
+        return None, "", ""  # No valid plays, must pass
 
     # Build context for AI decision
     hand_display = [c.display() for c in npc.hand]
@@ -763,17 +765,18 @@ JSON形式:
         data = json.loads(content)
         action = data.get("action", "pass")
         speech = data.get("speech", "")
+        reasoning = data.get("reasoning", "")
         if action == "pass":
-            return None, ""
+            return None, "", reasoning
         play_index = data.get("play_index", 0)
         if 0 <= play_index < len(valid_plays):
-            return valid_plays[play_index], speech
-        return valid_plays[0], speech  # fallback to first valid play
+            return valid_plays[play_index], speech, reasoning
+        return valid_plays[0], speech, reasoning  # fallback to first valid play
     except Exception:
         # Fallback: play a random valid move or pass
         if random.random() > 0.3:
-            return random.choice(valid_plays), ""
-        return None, ""
+            return random.choice(valid_plays), "", ""
+        return None, "", ""
 
 
 async def run_npc_turns(
@@ -810,7 +813,7 @@ async def run_npc_turns(
                 "speech": "",
             })
         else:
-            cards, speech = await decide_npc_play(current, state)
+            cards, speech, reasoning = await decide_npc_play(current, state)
             if cards is None:
                 from game_engine import apply_pass
                 state, msg = apply_pass(state, current.id)
@@ -821,6 +824,7 @@ async def run_npc_turns(
                     "message": msg,
                     "cards": [],
                     "speech": speech,
+                    "reasoning": reasoning,
                 })
             else:
                 from game_engine import apply_play
@@ -832,6 +836,7 @@ async def run_npc_turns(
                     "message": msg,
                     "cards": [c.to_dict() for c in cards],
                     "speech": speech,
+                    "reasoning": reasoning,
                 })
 
     return state, actions
@@ -849,17 +854,17 @@ NPC_VOTE_SYSTEM = """あなたはゲームのNPCです。
 async def decide_npc_vote(
     npc: Character,
     state: GameState,
-) -> Optional[str]:
-    """Decide who an NPC votes to hang. Returns target player ID or None."""
+) -> Tuple[Optional[str], str]:
+    """Decide who an NPC votes to hang. Returns (target player ID or None, reasoning)."""
     if npc.is_hanged:
-        return None
+        return None, ""
 
     candidates = [
         p for p in state.alive_players()
         if p.id != npc.id
     ]
     if not candidates:
-        return None
+        return None, ""
 
     candidates_info = [
         {"id": p.id, "name": p.name, "hand_count": p.hand_count()}
@@ -903,13 +908,14 @@ JSON:
     try:
         data = json.loads(content)
         target_id = data.get("target_id")
+        reasoning = data.get("reasoning", "")
         # Validate target exists and is not the NPC itself
         valid_ids = [p.id for p in candidates]
         if target_id in valid_ids:
-            return target_id
-        return random.choice(valid_ids)
+            return target_id, reasoning
+        return random.choice(valid_ids), reasoning
     except Exception:
-        return random.choice([p.id for p in candidates])
+        return random.choice([p.id for p in candidates]), ""
 
 
 # ─────────────────────────────────────────────

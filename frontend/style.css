@@ -1364,3 +1364,152 @@ body {
   border-left: 2px solid #6040a0;
   font-style: italic;
 }
+
+/* ============================================================
+   Debug Log Panel (AI判断ログ)
+   ============================================================ */
+.debug-log-panel {
+  position: fixed;
+  bottom: 0;
+  right: 0;
+  width: 380px;
+  max-height: 320px;
+  background: rgba(10, 12, 20, 0.92);
+  border: 1px solid rgba(39, 174, 96, 0.3);
+  border-radius: var(--radius) var(--radius) 0 0;
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.6);
+  z-index: 300;
+  display: flex;
+  flex-direction: column;
+  backdrop-filter: blur(6px);
+}
+
+.debug-log-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.4rem 0.8rem;
+  background: rgba(39, 174, 96, 0.1);
+  border-bottom: 1px solid rgba(39, 174, 96, 0.2);
+}
+
+.debug-log-title {
+  font-size: 0.78rem;
+  color: var(--green-light);
+  font-weight: bold;
+  letter-spacing: 0.08em;
+}
+
+.debug-log-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  cursor: pointer;
+  padding: 0.1rem 0.3rem;
+  transition: color 0.2s;
+}
+.debug-log-close:hover { color: var(--text-primary); }
+
+.debug-log-entries {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.4rem 0.6rem;
+  font-family: 'Menlo', 'Consolas', monospace;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.debug-log-entry {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.2rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.debug-entry-badge {
+  font-size: 0.65rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 3px;
+  font-weight: bold;
+  flex-shrink: 0;
+}
+
+.debug-vote .debug-entry-badge { background: rgba(192, 57, 43, 0.2); color: #e88; }
+.debug-play .debug-entry-badge { background: rgba(200, 168, 75, 0.2); color: var(--gold); }
+.debug-chat .debug-entry-badge { background: rgba(100, 160, 220, 0.2); color: #8ac; }
+.debug-cheat .debug-entry-badge { background: rgba(224, 128, 64, 0.2); color: #e08040; }
+.debug-victory .debug-entry-badge { background: rgba(39, 174, 96, 0.2); color: var(--green-light); }
+
+.debug-entry-turn {
+  font-size: 0.62rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.debug-entry-actor {
+  color: var(--gold);
+  font-weight: bold;
+  flex-shrink: 0;
+}
+
+.debug-entry-reasoning {
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
+/* Night log debug reasoning */
+.night-log-entry.debug-reasoning {
+  color: var(--green-light);
+  font-family: 'Menlo', 'Consolas', monospace;
+  font-size: 0.7rem;
+  opacity: 0.8;
+  padding-left: 1rem;
+  border-left: 2px solid rgba(39, 174, 96, 0.3);
+}
+
+/* Vote reasoning debug */
+.vote-reasoning-debug {
+  margin-top: 0.6rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid rgba(39, 174, 96, 0.2);
+}
+
+.debug-reason-title {
+  font-size: 0.68rem;
+  color: var(--green-light);
+  margin-bottom: 0.3rem;
+}
+
+.debug-vote-reason {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  padding: 0.15rem 0;
+  line-height: 1.4;
+}
+
+.debug-voter {
+  color: var(--gold);
+  font-weight: bold;
+}
+
+.debug-reason-text {
+  color: var(--green-light);
+  font-style: italic;
+}
+
+/* Victory reason on result screen */
+.result-victory-reason {
+  background: var(--bg-card);
+  border: 1px solid var(--gold-dark);
+  border-radius: var(--radius);
+  padding: 1rem 1.2rem;
+}
+
+.result-reason-line {
+  font-size: 0.85rem;
+  color: var(--gold-light);
+  line-height: 1.7;
+  padding: 0.15rem 0;
+}

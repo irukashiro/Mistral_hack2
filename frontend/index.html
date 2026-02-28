@@ -213,6 +213,15 @@
       </div>
 
     </main>
+
+    <!-- Debug Log Panel (god eye mode only) -->
+    <div id="debug-log-panel" class="debug-log-panel hidden">
+      <div class="debug-log-header">
+        <span class="debug-log-title">🔍 AI判断ログ</span>
+        <button id="debug-log-close" class="debug-log-close">✕</button>
+      </div>
+      <div id="debug-log-entries" class="debug-log-entries"></div>
+    </div>
   </div>
 
   <!-- ===== GAME OVER SCREEN (Rich Result) ===== -->
@@ -231,6 +240,12 @@
       <section class="result-section" id="result-amnesia-section">
         <h3 class="result-section-title">🌀 あなたの真の素性</h3>
         <div id="result-player-secret" class="result-player-secret"></div>
+      </section>
+
+      <!-- Victory Reason -->
+      <section class="result-section" id="result-victory-reason-section">
+        <h3 class="result-section-title">🏆 勝利理由</h3>
+        <div id="result-victory-reason" class="result-victory-reason"></div>
       </section>
 
       <!-- Characters -->

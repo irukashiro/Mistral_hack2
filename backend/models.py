@@ -176,6 +176,8 @@ class GameState(BaseModel):
     investigation_notes: List[str] = Field(default_factory=list)  # 昼フェーズの捜査メモ
     world_setting: dict = Field(default_factory=dict)  # 共有ワールド設定（地名・事件・派閥）
     amnesia_clues: List[str] = Field(default_factory=list)  # プレイヤーの記憶の断片（会話中に解放）
+    debug_log: List[dict] = Field(default_factory=list)  # AI判断理由ログ
+    victory_reason: str = ""  # 勝利理由テキスト
 
     def get_player(self, player_id: str) -> Optional[Character]:
         for p in self.players:
