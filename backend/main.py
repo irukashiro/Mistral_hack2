@@ -62,6 +62,21 @@ from models import (
 
 app = FastAPI(title="Class Conflict: Millionaire", version="1.0.0")
 
+
+def _save_npc_play_reasoning(state: GameState, npc_actions: list):
+    """Save NPC card play reasoning from run_npc_turns results to debug_log."""
+    for action in npc_actions:
+        reasoning = action.get("reasoning", "")
+        if reasoning:
+            state.debug_log.append({
+                "type": "play",
+                "actor": action["player_id"],
+                "actor_name": action["name"],
+                "reasoning": reasoning,
+                "detail": {"action": action["action"], "cards": [c.get("display", "") for c in action.get("cards", [])]},
+                "turn": state.day_number,
+            })
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -180,6 +195,8 @@ def _state_to_dict(
         "investigation_notes": state.investigation_notes,
         "amnesia_clues": state.amnesia_clues,
         "is_ghost_mode": is_ghost_mode,
+        "debug_log": state.debug_log if include_hidden else [],
+        "victory_reason": state.victory_reason,
     }
 
 
@@ -375,6 +392,8 @@ async def full_reveal(game_id: str):
         ],
         "world_setting": state.world_setting,
         "amnesia_clues": state.amnesia_clues,
+        "debug_log": state.debug_log,
+        "victory_reason": state.victory_reason,
     }
 
 
@@ -389,6 +408,7 @@ async def ghost_advance(request: dict):
         raise HTTPException(status_code=400, detail="夜フェーズではありません")
     try:
         state, npc_actions = await run_npc_turns(state)
+        _save_npc_play_reasoning(state, npc_actions)
     except Exception:
         npc_actions = []
     return {
@@ -437,6 +457,16 @@ async def chat(request: dict):
             text=resp["text"],
             turn=state.day_number,
         ))
+        # Save reasoning to debug_log
+        if resp.get("reasoning"):
+            state.debug_log.append({
+                "type": "chat",
+                "actor": resp["npc_id"],
+                "actor_name": resp["name"],
+                "reasoning": resp["reasoning"],
+                "detail": {"text": resp["text"]},
+                "turn": state.day_number,
+            })
 
     # Extract investigation facts from NPC responses
     try:
@@ -512,13 +542,22 @@ async def collect_npc_votes(request: dict):
     for npc in npcs:
         if npc.id not in state.votes:
             try:
-                target_id = await decide_npc_vote(npc, state)
+                target_id, reasoning = await decide_npc_vote(npc, state)
                 if target_id:
                     state.votes[npc.id] = target_id
                     target = state.get_player(target_id)
                     npc_vote_info.append({
                         "voter": npc.name,
                         "target": target.name if target else target_id,
+                        "reasoning": reasoning,
+                    })
+                    state.debug_log.append({
+                        "type": "vote",
+                        "actor": npc.id,
+                        "actor_name": npc.name,
+                        "reasoning": reasoning,
+                        "detail": {"target_id": target_id, "target_name": target.name if target else target_id},
+                        "turn": state.day_number,
                     })
             except Exception:
                 pass  # Skip failed NPC votes
@@ -564,6 +603,15 @@ async def finalize_vote(request: dict):
 
     # If an instant victory triggered (martyr/revenge/beat_target), return game-over state
     if state.game_over:
+        if state.victory_reason:
+            state.debug_log.append({
+                "type": "victory",
+                "actor": "",
+                "actor_name": "system",
+                "reasoning": state.victory_reason,
+                "detail": {"winner_ids": state.winner_ids},
+                "turn": state.day_number,
+            })
         return {
             "hanged_player": hanged_player_data,
             "vote_counts": vote_counts,
@@ -636,6 +684,7 @@ async def play_cards(request: PlayCardsRequest):
         # Run NPC turns
         try:
             state, npc_actions = await run_npc_turns(state)
+            _save_npc_play_reasoning(state, npc_actions)
         except Exception:
             pass
 
@@ -645,6 +694,16 @@ async def play_cards(request: PlayCardsRequest):
         state = check_victory(state)
         if not state.game_over:
             state = transition_to_day(state)
+
+    if state.game_over and state.victory_reason:
+        state.debug_log.append({
+            "type": "victory",
+            "actor": "",
+            "actor_name": "system",
+            "reasoning": state.victory_reason,
+            "detail": {"winner_ids": state.winner_ids},
+            "turn": state.day_number,
+        })
 
     return PlayCardsResponse(
         success=True,
@@ -673,6 +732,7 @@ async def pass_turn(request: PassRequest):
     if not state.game_over:
         try:
             state, npc_actions = await run_npc_turns(state)
+            _save_npc_play_reasoning(state, npc_actions)
         except Exception:
             pass
 
@@ -682,6 +742,16 @@ async def pass_turn(request: PassRequest):
         state = check_victory(state)
         if not state.game_over:
             state = transition_to_day(state)
+
+    if state.game_over and state.victory_reason:
+        state.debug_log.append({
+            "type": "victory",
+            "actor": "",
+            "actor_name": "system",
+            "reasoning": state.victory_reason,
+            "detail": {"winner_ids": state.winner_ids},
+            "turn": state.day_number,
+        })
 
     return PassResponse(
         success=True,
@@ -810,6 +880,7 @@ async def cheat_phase_complete(request: dict):
 
     try:
         state, npc_actions = await run_npc_turns(state)
+        _save_npc_play_reasoning(state, npc_actions)
     except Exception:
         npc_actions = []
 

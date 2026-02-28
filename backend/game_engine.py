@@ -485,6 +485,47 @@ def check_instant_victories(state: GameState) -> GameState:
     if new_winners:
         state.winner_ids.extend(new_winners)
         state.game_over = True
+        # Build victory reason text
+        reasons = []
+        for pid in new_winners:
+            p = state.get_player(pid)
+            if not p:
+                continue
+            vc = p.victory_condition
+            tw = p.true_win
+            reason_parts = []
+            if vc.type == "first_out" and state.out_order and state.out_order[0] == pid:
+                reason_parts.append(f"公開条件「{vc.description}」達成（最初に上がった）")
+            elif vc.type == "revolution" and state.revolution_active:
+                reason_parts.append(f"公開条件「{vc.description}」達成（革命が発動中）")
+            elif vc.type == "beat_target" and vc.target_npc_id:
+                t = state.get_player(vc.target_npc_id)
+                tname = t.name if t else vc.target_npc_id
+                if t and t.is_hanged:
+                    reason_parts.append(f"公開条件達成（{tname}が処刑された）")
+                else:
+                    reason_parts.append(f"公開条件達成（{tname}より先に上がった）")
+            elif vc.type == "help_target" and vc.target_npc_id:
+                t = state.get_player(vc.target_npc_id)
+                tname = t.name if t else vc.target_npc_id
+                reason_parts.append(f"公開条件達成（{tname}を最初に上がらせた）")
+            if tw:
+                if tw.type == "revenge_on" and tw.target_id:
+                    t = state.get_player(tw.target_id)
+                    tname = t.name if t else tw.target_id
+                    reason_parts.append(f"真の目標「{tw.description}」達成（{tname}への復讐）")
+                elif tw.type == "protect" and tw.target_id:
+                    t = state.get_player(tw.target_id)
+                    tname = t.name if t else tw.target_id
+                    reason_parts.append(f"真の目標「{tw.description}」達成（{tname}を守り抜いた）")
+                elif tw.type == "climber":
+                    reason_parts.append(f"真の目標「{tw.description}」達成（最初に上がった）")
+                elif tw.type == "martyr":
+                    reason_parts.append(f"真の目標「{tw.description}」達成（自ら処刑された）")
+            if reason_parts:
+                reasons.append(f"{p.name}: {' / '.join(reason_parts)}")
+        if reasons:
+            state.victory_reason = "\n".join(reasons)
 
     return state
 
@@ -507,6 +548,9 @@ def check_victory(state: GameState) -> GameState:
         for player in state.players:
             if not player.is_hanged and player.id not in state.winner_ids:
                 state.winner_ids.append(player.id)
+        if not state.victory_reason:
+            names = [state.get_player(pid).name for pid in state.winner_ids if state.get_player(pid)]
+            state.victory_reason = f"夜の終了: 生存者 ({', '.join(names)}) が共同勝利"
 
     if state.winner_ids:
         state.game_over = True

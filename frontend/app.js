@@ -136,6 +136,13 @@ function renderAll() {
       startGhostAutoAdvance();
     }
   }
+
+  // Debug log panel (god eye mode)
+  if (godEyeMode) {
+    renderDebugLog();
+  } else {
+    $('debug-log-panel').classList.add('hidden');
+  }
 }
 
 function showPhase(phase) {
@@ -363,6 +370,22 @@ async function collectNpcVotes() {
       tally.appendChild(row);
     });
 
+    // Show NPC vote reasoning in god eye mode
+    if (godEyeMode && data.npc_vote_info) {
+      const reasonDiv = document.createElement('div');
+      reasonDiv.className = 'vote-reasoning-debug';
+      reasonDiv.innerHTML = '<h4 class="debug-reason-title">AI判断理由</h4>';
+      data.npc_vote_info.forEach(info => {
+        if (info.reasoning) {
+          const r = document.createElement('div');
+          r.className = 'debug-vote-reason';
+          r.innerHTML = `<span class="debug-voter">${escHtml(info.voter)}</span> → ${escHtml(info.target)}: <span class="debug-reason-text">${escHtml(info.reasoning)}</span>`;
+          reasonDiv.appendChild(r);
+        }
+      });
+      tally.appendChild(reasonDiv);
+    }
+
     renderVoteList();
   } catch (e) {
     console.error(e);
@@ -542,6 +565,10 @@ function addNightLogEntries(npcActions) {
         type: special ? 'special' : 'play',
         text: `${action.name}: ${cardsStr} を出した${msg.includes('革命') ? ' 🔥革命！' : msg.includes('8切り') ? ' ✂8切り！' : ''}`,
       });
+    }
+    // Debug: show reasoning in night log when god eye mode is on
+    if (godEyeMode && action.reasoning) {
+      nightLog.push({ type: 'debug-reasoning', text: `  [AI] ${action.name}: ${action.reasoning}` });
     }
   });
   renderNightLog();
@@ -820,6 +847,7 @@ async function renderGameOver() {
     console.log('[renderGameOver] Got data:', data);
     renderResultWorldSetting(data);
     renderResultPlayerSecret(data);
+    renderResultVictoryReason(data);
     renderResultCharacters(data);
     renderResultRelationships(data);
     renderResultCheatLog(data);
@@ -883,6 +911,16 @@ function renderResultPlayerSecret(data) {
     html += clues.map(c => `<div class="result-secret-clue">🌀 ${escHtml(c)}</div>`).join('');
   }
   container.innerHTML = html;
+}
+
+function renderResultVictoryReason(data) {
+  const container = $('result-victory-reason');
+  const reason = data.victory_reason || (gameState && gameState.victory_reason) || '';
+  if (!reason) {
+    container.innerHTML = '<span class="muted">勝利理由の記録なし</span>';
+    return;
+  }
+  container.innerHTML = reason.split('\n').map(line => `<div class="result-reason-line">${escHtml(line)}</div>`).join('');
 }
 
 function renderResultCharacters(data) {
@@ -979,6 +1017,7 @@ $('restart-btn').addEventListener('click', () => {
   $('hints-panel').classList.add('hidden');
   $('amnesia-list').classList.add('hidden');
   $('debug-toggle-btn').classList.remove('active');
+  $('debug-log-panel').classList.add('hidden');
   showScreen('setup');
 });
 
@@ -1011,10 +1050,61 @@ async function fetchAndApplyDebugState() {
         if (debugP.hand) p.hand = debugP.hand;
       }
     });
+    // Apply debug_log
+    if (data.debug_log) {
+      gameState.debug_log = data.debug_log;
+    }
     renderAll();
+    renderDebugLog();
   } catch (e) {
     console.error(e);
   }
+}
+
+// ─── Debug Log Panel ──────────────────────────────────────────
+$('debug-log-close').addEventListener('click', () => {
+  $('debug-log-panel').classList.add('hidden');
+});
+
+function renderDebugLog() {
+  const panel = $('debug-log-panel');
+  const entries = $('debug-log-entries');
+  if (!godEyeMode) {
+    panel.classList.add('hidden');
+    return;
+  }
+
+  const log = (gameState && gameState.debug_log) || [];
+  if (log.length === 0) {
+    panel.classList.add('hidden');
+    return;
+  }
+
+  panel.classList.remove('hidden');
+  entries.innerHTML = '';
+
+  const typeLabels = { vote: '投票', play: 'カード', chat: '発言', cheat: 'イカサマ', victory: '勝利' };
+  const typeClasses = { vote: 'debug-vote', play: 'debug-play', chat: 'debug-chat', cheat: 'debug-cheat', victory: 'debug-victory' };
+
+  log.forEach(entry => {
+    const div = document.createElement('div');
+    div.className = `debug-log-entry ${typeClasses[entry.type] || ''}`;
+    const label = typeLabels[entry.type] || entry.type;
+    let reasonText = '';
+    if (typeof entry.reasoning === 'object' && entry.reasoning !== null) {
+      reasonText = Object.entries(entry.reasoning).map(([k, v]) => `${k}: ${v}`).join(' / ');
+    } else {
+      reasonText = String(entry.reasoning || '');
+    }
+    div.innerHTML = `
+      <span class="debug-entry-badge">${label}</span>
+      <span class="debug-entry-turn">T${entry.turn || '?'}</span>
+      <span class="debug-entry-actor">${escHtml(entry.actor_name || '')}</span>
+      <span class="debug-entry-reasoning">${escHtml(reasonText)}</span>
+    `;
+    entries.appendChild(div);
+  });
+  entries.scrollTop = entries.scrollHeight;
 }
 
 // ─── Hints System ─────────────────────────────────────────────
