@@ -85,6 +85,7 @@
               <input type="text" id="chat-input" placeholder="発言する..." maxlength="200" />
               <button id="chat-send-btn" class="btn-secondary">送信</button>
             </div>
+            <button id="intro-btn" class="btn-intro hidden">🎭 みんな、自己紹介してください</button>
             <button id="hints-toggle-btn" class="btn-secondary hints-toggle-btn">💡 ヒント表示</button>
             <div id="hints-panel" class="hints-panel hidden">
               <div class="hints-row" id="hints-list"></div>
@@ -213,6 +214,15 @@
       </div>
 
     </main>
+
+    <!-- Relationship Matrix Panel (god eye mode only) -->
+    <div id="relationship-matrix-panel" class="relationship-matrix-panel hidden">
+      <div class="rel-matrix-header">
+        <span class="rel-matrix-title">🔗 関係性マトリクス</span>
+        <button id="rel-matrix-close" class="rel-matrix-close">✕</button>
+      </div>
+      <div id="rel-matrix-body" class="rel-matrix-body"></div>
+    </div>
 
     <!-- Debug Log Panel (god eye mode only) -->
     <div id="debug-log-panel" class="debug-log-panel hidden">

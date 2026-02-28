@@ -9,6 +9,28 @@ class Role(str, Enum):
     HINMIN = "hinmin"   # 貧民 (Poor)
 
 
+class CharacterState(int, Enum):
+    NOT_EXIST = 0          # 存在しない
+    DEAD = 1               # 亡き者
+    PLAYING = 2            # カードゲーム中
+    SUSPECTED = 3          # 被疑
+    EXILED = 4             # 追放
+    WON_ROUND = 5          # 勝利終了
+    IN_MEETING = 6         # 会議中
+    ATTACKING = 7          # 攻撃（他者を疑う）
+    DEFENDING = 8          # 擁護（他者を防衛）
+    COMPLETE_VICTORY = 9   # 完全勝利
+
+
+class RelationshipValue(int, Enum):
+    ENEMY = -2         # 敵対
+    HOSTILE = -1       # 敵意
+    NEUTRAL = 0        # 中立
+    FRIENDLY = 1       # 友好
+    TRUST = 2          # 信頼
+    SECRET_SHARED = 3  # 秘密の共有
+
+
 class CheatEffectType(str, Enum):
     REVEAL_HAND = "reveal_hand"  # 全員に手札公開
     PEEK_HAND   = "peek_hand"    # 仕掛けた側だけ見える
@@ -129,6 +151,7 @@ class Character(BaseModel):
     cheat_used_this_night: bool = False
     hand_revealed: bool = False   # ズル効果で手札が全員に見える
     skip_next_turn: bool = False  # ズル効果で次ターンスキップ
+    state: int = Field(default=2)  # CharacterState コード (0-9)
     argument_style: str = ""      # 慎重派/扇動者/論理派/便乗派/狂信者
     true_win: Optional["TrueWinCondition"] = None  # 真の勝利条件
 
@@ -176,6 +199,7 @@ class GameState(BaseModel):
     investigation_notes: List[str] = Field(default_factory=list)  # 昼フェーズの捜査メモ
     world_setting: dict = Field(default_factory=dict)  # 共有ワールド設定（地名・事件・派閥）
     amnesia_clues: List[str] = Field(default_factory=list)  # プレイヤーの記憶の断片（会話中に解放）
+    relationship_matrix: Dict[str, Dict[str, int]] = Field(default_factory=dict)  # N×N 関係性マトリクス
     debug_log: List[dict] = Field(default_factory=list)  # AI判断理由ログ
     victory_reason: str = ""  # 勝利理由テキスト
 
@@ -264,3 +288,26 @@ class PassResponse(BaseModel):
     message: str
     state: dict
     npc_actions: List[dict] = Field(default_factory=list)
+
+
+class GameIdRequest(BaseModel):
+    game_id: str
+
+
+class GameIdWithPlayerRequest(BaseModel):
+    game_id: str
+    player_id: str = "player_human"
+
+
+class CheatInitiateRequest(BaseModel):
+    game_id: str
+    cheater_id: str = "player_human"
+    target_id: str
+    method: str = ""
+
+
+class CheatDefendRequest(BaseModel):
+    game_id: str
+    defender_id: str = "player_human"
+    defense_method: str = ""
+    defense_category: str = ""

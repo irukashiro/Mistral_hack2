@@ -13,6 +13,54 @@ let myVoteTarget = null;
 let godEyeMode = localStorage.getItem('godEyeMode') === 'true';
 let hintsVisible = false;
 let ghostAdvanceTimer = null;
+let introUsed = false;
+
+// ─── localStorage persistence ────────────────────────────────
+function saveGameToStorage() {
+  if (!gameId || !gameState) return;
+  try {
+    const data = {
+      gameId,
+      playerId,
+      // Trim chat_history to last 50 entries to stay under 5MB
+      gameState: Object.assign({}, gameState, {
+        chat_history: (gameState.chat_history || []).slice(-50),
+      }),
+    };
+    localStorage.setItem('ccm_save', JSON.stringify(data));
+  } catch (e) {
+    console.warn('localStorage save failed:', e);
+  }
+}
+
+function clearGameStorage() {
+  localStorage.removeItem('ccm_save');
+}
+
+async function tryRestoreGame() {
+  try {
+    const raw = localStorage.getItem('ccm_save');
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    if (!data.gameId) return false;
+    // Verify game still exists on server
+    const res = await fetch(`${API}/api/game/state?game_id=${data.gameId}&player_id=${data.playerId}`);
+    if (!res.ok) {
+      clearGameStorage();
+      return false;
+    }
+    const serverState = await res.json();
+    gameId = data.gameId;
+    playerId = data.playerId;
+    gameState = serverState;
+    showScreen('game');
+    renderAll();
+    return true;
+  } catch (e) {
+    clearGameStorage();
+    return false;
+  }
+}
 
 // ─── DOM refs ────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -31,6 +79,36 @@ function showScreen(name) {
 
 // ─── Card rendering ──────────────────────────────────────────
 const SUIT_SYMBOL = { clubs: '♣', diamonds: '♦', hearts: '♥', spades: '♠', joker: '🃏' };
+
+// ─── Character State Labels (0-9) ────────────────────────────
+const STATE_LABELS = {
+  0: { label: '不在', cls: 'state-0' },
+  1: { label: '死亡', cls: 'state-1' },
+  2: { label: 'Play', cls: 'state-2' },
+  3: { label: '被疑', cls: 'state-3' },
+  4: { label: '追放', cls: 'state-4' },
+  5: { label: '上がり', cls: 'state-5' },
+  6: { label: '会議', cls: 'state-6' },
+  7: { label: '攻撃', cls: 'state-7' },
+  8: { label: '擁護', cls: 'state-8' },
+  9: { label: '勝利', cls: 'state-9' },
+};
+
+function stateBadgeHtml(stateCode) {
+  const info = STATE_LABELS[stateCode];
+  if (!info) return '';
+  return `<span class="state-badge ${info.cls}">${info.label}</span>`;
+}
+
+// ─── Relationship value labels ────────────────────────────────
+const REL_CELL_CLASS = {
+  '-2': 'rel-cell-enemy',
+  '-1': 'rel-cell-hostile',
+  '0': 'rel-cell-neutral',
+  '1': 'rel-cell-friendly',
+  '2': 'rel-cell-trust',
+  '3': 'rel-cell-secret',
+};
 
 function cardEl(card, index, selectable = false, small = false) {
   const el = document.createElement('div');
@@ -68,6 +146,9 @@ function toggleCard(index, el) {
 $('start-btn').addEventListener('click', startGame);
 $('player-name').addEventListener('keydown', e => { if (e.key === 'Enter') startGame(); });
 
+// Auto-restore from localStorage on page load
+tryRestoreGame();
+
 async function startGame() {
   const playerName = $('player-name').value.trim() || 'プレイヤー';
   const npcCount = parseInt($('npc-count').value, 10);
@@ -95,6 +176,7 @@ async function startGame() {
 
     showScreen('game');
     renderAll();
+    saveGameToStorage();
   } catch (e) {
     $('setup-error').textContent = e.message;
     $('setup-error').classList.remove('hidden');
@@ -137,12 +219,16 @@ function renderAll() {
     }
   }
 
-  // Debug log panel (god eye mode)
+  // Debug log panel & relationship matrix (god eye mode)
   if (godEyeMode) {
     renderDebugLog();
+    renderRelationshipMatrix();
   } else {
     $('debug-log-panel').classList.add('hidden');
+    $('relationship-matrix-panel').classList.add('hidden');
   }
+
+  saveGameToStorage();
 }
 
 function showPhase(phase) {
@@ -189,6 +275,16 @@ function renderDayPhase() {
   renderVoteList();
   renderInvestigationNotes();
   renderAmnesiaClues();
+  updateIntroButton();
+}
+
+function updateIntroButton() {
+  const btn = $('intro-btn');
+  if (gameState && gameState.day_number === 1 && !introUsed) {
+    btn.classList.remove('hidden');
+  } else {
+    btn.classList.add('hidden');
+  }
 }
 
 function renderPlayersList() {
@@ -204,7 +300,7 @@ function renderPlayersList() {
       ? `<span class="player-role-badge ${displayRole}">${roleLabel}</span>`
       : '<span class="player-role-badge">?</span>';
     div.innerHTML = `
-      <div class="player-name">${p.name}${p.is_human ? ' ★' : ''}${roleBadge}</div>
+      <div class="player-name">${p.name}${p.is_human ? ' ★' : ''}${roleBadge}${stateBadgeHtml(p.state)}</div>
       <div class="player-cards-count">手札: ${p.hand_count}枚${p.is_hanged ? ' 【吊】' : ''}${p.is_out ? ' 【上がり】' : ''}</div>
     `;
     // God eye mode overlay
@@ -281,6 +377,15 @@ $('goto-result-btn').addEventListener('click', async () => {
 // Chat
 $('chat-send-btn').addEventListener('click', sendChat);
 $('chat-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
+
+// Intro button — Day 1 flavor action
+$('intro-btn').addEventListener('click', () => {
+  if (introUsed) return;
+  introUsed = true;
+  $('intro-btn').classList.add('hidden');
+  $('chat-input').value = 'みんな、自己紹介してください';
+  sendChat();
+});
 
 async function sendChat() {
   const msg = $('chat-input').value.trim();
@@ -482,7 +587,7 @@ function renderNightPlayersList() {
     const div = document.createElement('div');
     div.className = `night-player-item${gameState.current_turn === p.id ? ' current-turn' : ''}${p.is_hanged ? ' hanged' : ''}${p.is_out ? ' out' : ''}`;
     div.innerHTML = `
-      <div class="night-player-name">${p.name}${gameState.current_turn === p.id ? ' ▶' : ''}</div>
+      <div class="night-player-name">${p.name}${gameState.current_turn === p.id ? ' ▶' : ''}${stateBadgeHtml(p.state)}</div>
       <div class="night-player-count">手札: ${p.hand_count}枚${p.is_hanged ? ' 【吊】' : ''}${p.is_out ? ' 上がり' : ''}</div>
     `;
     container.appendChild(div);
@@ -1001,6 +1106,7 @@ function renderResultCheatLog(data) {
 }
 
 $('restart-btn').addEventListener('click', () => {
+  clearGameStorage();
   gameId = null;
   playerId = 'player_human';
   gameState = null;
@@ -1008,6 +1114,7 @@ $('restart-btn').addEventListener('click', () => {
   myVoteTarget = null;
   nightLog = [];
   lastBatonMap = {};
+  introUsed = false;
   godEyeMode = false;
   localStorage.removeItem('godEyeMode');
   hintsVisible = false;
@@ -1050,12 +1157,16 @@ async function fetchAndApplyDebugState() {
         if (debugP.hand) p.hand = debugP.hand;
       }
     });
-    // Apply debug_log
+    // Apply debug_log and relationship_matrix
     if (data.debug_log) {
       gameState.debug_log = data.debug_log;
     }
+    if (data.relationship_matrix) {
+      gameState.relationship_matrix = data.relationship_matrix;
+    }
     renderAll();
     renderDebugLog();
+    renderRelationshipMatrix();
   } catch (e) {
     console.error(e);
   }
@@ -1083,8 +1194,8 @@ function renderDebugLog() {
   panel.classList.remove('hidden');
   entries.innerHTML = '';
 
-  const typeLabels = { vote: '投票', play: 'カード', chat: '発言', cheat: 'イカサマ', victory: '勝利' };
-  const typeClasses = { vote: 'debug-vote', play: 'debug-play', chat: 'debug-chat', cheat: 'debug-cheat', victory: 'debug-victory' };
+  const typeLabels = { vote: '投票', play: 'カード', chat: '発言', cheat: 'イカサマ', victory: '勝利', api_call: 'API' };
+  const typeClasses = { vote: 'debug-vote', play: 'debug-play', chat: 'debug-chat', cheat: 'debug-cheat', victory: 'debug-victory', api_call: 'debug-api' };
 
   log.forEach(entry => {
     const div = document.createElement('div');
@@ -1096,15 +1207,66 @@ function renderDebugLog() {
     } else {
       reasonText = String(entry.reasoning || '');
     }
+    // Show latency for API calls
+    const latencyBadge = (entry.type === 'api_call' && entry.detail && entry.detail.latency_ms)
+      ? `<span class="debug-entry-latency">${entry.detail.latency_ms}ms</span>` : '';
     div.innerHTML = `
       <span class="debug-entry-badge">${label}</span>
       <span class="debug-entry-turn">T${entry.turn || '?'}</span>
       <span class="debug-entry-actor">${escHtml(entry.actor_name || '')}</span>
+      ${latencyBadge}
       <span class="debug-entry-reasoning">${escHtml(reasonText)}</span>
     `;
     entries.appendChild(div);
   });
   entries.scrollTop = entries.scrollHeight;
+}
+
+// ─── Relationship Matrix Panel ────────────────────────────────
+$('rel-matrix-close').addEventListener('click', () => {
+  $('relationship-matrix-panel').classList.add('hidden');
+});
+
+function renderRelationshipMatrix() {
+  const panel = $('relationship-matrix-panel');
+  const body = $('rel-matrix-body');
+  if (!godEyeMode) {
+    panel.classList.add('hidden');
+    return;
+  }
+
+  const matrix = gameState && gameState.relationship_matrix;
+  if (!matrix || Object.keys(matrix).length === 0) {
+    panel.classList.add('hidden');
+    return;
+  }
+
+  const players = gameState.players;
+  const ids = players.map(p => p.id);
+  const nameMap = {};
+  players.forEach(p => { nameMap[p.id] = p.name; });
+
+  let html = '<table class="relationship-matrix"><tr><th></th>';
+  ids.forEach(id => { html += `<th>${escHtml(nameMap[id] || id)}</th>`; });
+  html += '</tr>';
+
+  ids.forEach(rowId => {
+    html += `<tr><td class="rel-row-header">${escHtml(nameMap[rowId] || rowId)}</td>`;
+    ids.forEach(colId => {
+      if (rowId === colId) {
+        html += '<td class="rel-cell-self">-</td>';
+      } else {
+        const val = (matrix[rowId] && matrix[rowId][colId] !== undefined) ? matrix[rowId][colId] : 0;
+        const cls = REL_CELL_CLASS[String(val)] || 'rel-cell-neutral';
+        html += `<td class="${cls}">${val}</td>`;
+      }
+    });
+    html += '</tr>';
+  });
+  html += '</table>';
+
+  body.innerHTML = html;
+  panel.classList.remove('hidden');
 }
 
 // ─── Hints System ─────────────────────────────────────────────
