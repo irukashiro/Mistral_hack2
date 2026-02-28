@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Class Conflict: Millionaire — 大富豪×人狼</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <!-- ===== SETUP SCREEN ===== -->
+  <div id="setup-screen" class="screen active">
+    <div class="setup-container">
+      <h1 class="title-main">CLASS CONFLICT<br><span class="title-sub">MILLIONAIRE</span></h1>
+      <p class="title-tagline">大富豪 × 人狼 × AI</p>
+      <div class="setup-form">
+        <label for="player-name">あなたの名前</label>
+        <input type="text" id="player-name" placeholder="名前を入力..." maxlength="20" value="プレイヤー" />
+        <label for="npc-count">NPC人数</label>
+        <select id="npc-count">
+          <option value="3">3人</option>
+          <option value="4" selected>4人</option>
+          <option value="5">5人</option>
+          <option value="6">6人</option>
+        </select>
+        <button id="start-btn" class="btn-primary">ゲーム開始</button>
+        <p id="setup-error" class="error-msg hidden"></p>
+      </div>
+      <div id="loading-overlay" class="loading hidden">
+        <div class="spinner"></div>
+        <p>キャラクターを生成中...</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== GAME SCREEN ===== -->
+  <div id="game-screen" class="screen hidden">
+    <!-- Header -->
+    <header class="game-header">
+      <div class="header-left">
+        <span class="header-day" id="header-day">Day 1</span>
+        <span class="header-phase" id="header-phase">昼</span>
+      </div>
+      <div class="header-center">
+        <span class="game-title-small">CLASS CONFLICT</span>
+      </div>
+      <div class="header-right">
+        <span class="header-role-label">あなたの役割:</span>
+        <span class="header-role" id="header-role">—</span>
+        <span class="header-cards" id="header-cards">手札: 0枚</span>
+      </div>
+    </header>
+
+    <!-- Revolution Banner -->
+    <div id="revolution-banner" class="revolution-banner hidden">⚡ 革命中 — 強弱逆転！ ⚡</div>
+
+    <!-- Main Area -->
+    <main class="game-main">
+
+      <!-- ===== DAY PHASE ===== -->
+      <div id="day-phase" class="phase-panel active">
+        <div class="day-layout">
+
+          <!-- Players Panel -->
+          <aside class="players-panel">
+            <h3>生存者</h3>
+            <div id="players-list" class="players-list"></div>
+          </aside>
+
+          <!-- Chat Area -->
+          <section class="chat-section">
+            <div id="chat-log" class="chat-log"></div>
+            <div class="chat-input-area">
+              <input type="text" id="chat-input" placeholder="発言する..." maxlength="200" />
+              <button id="chat-send-btn" class="btn-secondary">送信</button>
+            </div>
+            <div class="day-actions">
+              <button id="collect-votes-btn" class="btn-secondary">NPCに投票させる</button>
+              <button id="finalize-vote-btn" class="btn-danger">投票確定・処刑</button>
+            </div>
+          </section>
+
+          <!-- Vote Panel -->
+          <aside class="vote-panel">
+            <h3>投票</h3>
+            <p class="vote-hint">処刑する人物を選んでください</p>
+            <div id="vote-list" class="vote-list"></div>
+            <div id="vote-tally" class="vote-tally hidden"></div>
+          </aside>
+
+        </div>
+      </div>
+
+      <!-- ===== NIGHT PHASE ===== -->
+      <div id="night-phase" class="phase-panel hidden">
+        <div class="night-layout">
+
+          <!-- Left: Other players -->
+          <aside class="night-players-panel">
+            <h3>他プレイヤー</h3>
+            <div id="night-players-list" class="night-players-list"></div>
+          </aside>
+
+          <!-- Center: Table & Actions -->
+          <section class="night-center">
+            <div class="table-area">
+              <div class="table-label">場のカード</div>
+              <div id="table-cards" class="table-cards">
+                <span class="empty-table">（場は空き）</span>
+              </div>
+            </div>
+            <div class="turn-indicator">
+              <span id="turn-indicator-text">ターン待機中...</span>
+            </div>
+            <div class="hand-area">
+              <div class="hand-label">あなたの手札 <span id="hand-count-label"></span></div>
+              <div id="player-hand" class="player-hand"></div>
+            </div>
+            <div class="night-actions">
+              <button id="play-cards-btn" class="btn-primary" disabled>カードを出す</button>
+              <button id="pass-btn" class="btn-secondary">パス</button>
+            </div>
+            <div id="night-log" class="night-log"></div>
+          </section>
+
+          <!-- Right: Hanged player info -->
+          <aside class="hanged-panel" id="hanged-panel">
+            <h3>吊られた者</h3>
+            <div id="hanged-info" class="hanged-info">
+              <p class="muted">まだ誰も吊られていません</p>
+            </div>
+          </aside>
+
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- ===== GAME OVER SCREEN ===== -->
+  <div id="gameover-screen" class="screen hidden">
+    <div class="gameover-container">
+      <h2 id="gameover-title">ゲーム終了</h2>
+      <div id="gameover-winners" class="gameover-winners"></div>
+      <button id="restart-btn" class="btn-primary">もう一度プレイ</button>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
