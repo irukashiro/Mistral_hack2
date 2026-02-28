@@ -17,10 +17,14 @@ load_dotenv()
 from ai_service import (
     decide_npc_vote,
     generate_characters,
+    generate_npc_defense,
     generate_npc_speeches_for_player_message,
+    judge_cheat,
+    process_all_npc_cheats,
     run_npc_turns,
 )
 from game_engine import (
+    apply_cheat_effect,
     apply_pass,
     apply_play,
     check_revolution_victory,
@@ -35,6 +39,7 @@ from models import (
     Card,
     Character,
     ChatMessage,
+    CheatEffectType,
     FinalizeVoteResponse,
     GameState,
     PassRequest,
@@ -83,11 +88,15 @@ def _state_to_dict(state: GameState, requesting_player_id: str = None) -> dict:
         else:
             pdata["role"] = None  # hidden
 
-        # Show hand to: self, or hanged (public hand)
-        if is_self or p.is_hanged:
+        # Show hand to: self, hanged (public hand), or hand_revealed via cheat effect
+        if is_self or p.is_hanged or p.hand_revealed:
             pdata["hand"] = [c.to_dict() for c in p.hand]
         else:
             pdata["hand"] = None  # hidden
+
+        pdata["cheat_used_this_night"] = p.cheat_used_this_night
+        pdata["hand_revealed"] = p.hand_revealed
+        pdata["skip_next_turn"] = p.skip_next_turn
 
         players_data.append(pdata)
 
@@ -116,6 +125,21 @@ def _state_to_dict(state: GameState, requesting_player_id: str = None) -> dict:
         "out_order": state.out_order,
         "hanged_today": state.hanged_today,
         "consecutive_passes": state.consecutive_passes,
+        "table_clear_count": state.table_clear_count,
+        "night_cheat_phase_done": state.night_cheat_phase_done,
+        "pending_cheat": {
+            "hint": state.pending_cheat.hint,
+            "target_id": state.pending_cheat.target_id,
+        } if state.pending_cheat else None,
+        "cheat_log": [
+            {
+                "type": e.type.value,
+                "cheater_id": e.cheater_id,
+                "target_id": e.target_id,
+                "story": e.story,
+            }
+            for e in state.cheat_log
+        ],
     }
 
 
@@ -347,17 +371,32 @@ async def finalize_vote(request: dict):
     # Transition to night phase
     state = transition_to_night(state)
 
-    # After transitioning to night, run NPC turns until human's turn
+    # Process NPC cheat attempts (may produce a pending_cheat for human)
+    npc_cheat_results = []
+    pending_cheat_data = None
     try:
-        state, npc_actions = await run_npc_turns(state)
+        state, pending_cheat, npc_cheat_results = await process_all_npc_cheats(state)
+        if pending_cheat:
+            pending_cheat_data = {"hint": pending_cheat.hint, "target_id": pending_cheat.target_id}
     except Exception:
-        npc_actions = []
+        pass
+
+    # Determine if human can cheat (hinmin who hasn't cheated yet)
+    human = state.get_human_player()
+    human_can_cheat = (
+        human is not None
+        and human.role == Role.HINMIN
+        and not human.cheat_used_this_night
+        and not human.is_hanged
+    )
 
     return {
         "hanged_player": hanged_player_data,
         "vote_counts": vote_counts,
         "state": _state_to_dict(state, "player_human"),
-        "npc_actions": npc_actions,
+        "pending_cheat": pending_cheat_data,
+        "human_can_cheat": human_can_cheat,
+        "npc_cheat_results": npc_cheat_results,
     }
 
 
@@ -437,6 +476,132 @@ async def pass_turn(request: PassRequest):
         state=_state_to_dict(state, request.player_id),
         npc_actions=npc_actions,
     )
+
+
+@app.post("/api/game/cheat-initiate")
+async def cheat_initiate(request: dict):
+    """Human player (hinmin) initiates a cheat against an NPC."""
+    game_id = request.get("game_id")
+    cheater_id = request.get("cheater_id", "player_human")
+    target_id = request.get("target_id")
+    method = request.get("method", "")
+
+    state = game_store.get(game_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="ゲームが見つかりません")
+
+    if state.phase != "night":
+        raise HTTPException(status_code=400, detail="夜フェーズでのみイカサマできます")
+
+    cheater = state.get_player(cheater_id)
+    target = state.get_player(target_id)
+
+    if cheater is None or cheater.is_hanged:
+        raise HTTPException(status_code=400, detail="無効なプレイヤーです")
+    if target is None or target.is_hanged or target.is_human:
+        raise HTTPException(status_code=400, detail="無効なターゲットです")
+    if cheater.cheat_used_this_night:
+        raise HTTPException(status_code=400, detail="今夜すでにイカサマを使いました")
+
+    cheater.cheat_used_this_night = True
+
+    try:
+        defense = await generate_npc_defense(target, "何かイカサマを感じる", state)
+        effect = await judge_cheat(cheater, target, method, defense, state)
+        state = apply_cheat_effect(state, effect)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"イカサマ処理エラー: {str(e)}")
+
+    return {
+        "story": effect.story,
+        "success": effect.type != CheatEffectType.NO_EFFECT,
+        "effect_type": effect.type.value,
+        "state": _state_to_dict(state, "player_human"),
+    }
+
+
+@app.post("/api/game/cheat-defend")
+async def cheat_defend(request: dict):
+    """Human player defends against an NPC's pending cheat."""
+    game_id = request.get("game_id")
+    defender_id = request.get("defender_id", "player_human")
+    defense_method = request.get("defense_method", "")
+
+    state = game_store.get(game_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="ゲームが見つかりません")
+
+    if state.pending_cheat is None:
+        raise HTTPException(status_code=400, detail="防御すべきイカサマがありません")
+
+    pending = state.pending_cheat
+    cheater = state.get_player(pending.cheater_id)
+    target = state.get_player(pending.target_id)
+
+    if cheater is None or target is None:
+        raise HTTPException(status_code=400, detail="プレイヤーが見つかりません")
+
+    try:
+        effect = await judge_cheat(cheater, target, pending.method, defense_method, state)
+        state = apply_cheat_effect(state, effect)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"防御処理エラー: {str(e)}")
+
+    # Reveal cheater identity if cheat failed
+    cheater_revealed = effect.type == CheatEffectType.NO_EFFECT
+    state.pending_cheat = None
+
+    return {
+        "story": effect.story,
+        "success": effect.type != CheatEffectType.NO_EFFECT,
+        "cheater_revealed": cheater_revealed,
+        "cheater_name": pending.cheater_name if cheater_revealed else None,
+        "effect_type": effect.type.value,
+        "state": _state_to_dict(state, "player_human"),
+    }
+
+
+@app.post("/api/game/cheat-skip")
+async def cheat_skip(request: dict):
+    """Human player skips their cheat opportunity this night."""
+    game_id = request.get("game_id")
+    player_id = request.get("player_id", "player_human")
+
+    state = game_store.get(game_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="ゲームが見つかりません")
+
+    player = state.get_player(player_id)
+    if player:
+        player.cheat_used_this_night = True
+
+    return {"state": _state_to_dict(state, "player_human")}
+
+
+@app.post("/api/game/cheat-phase-complete")
+async def cheat_phase_complete(request: dict):
+    """Mark the cheat phase as done and start NPC card play turns."""
+    game_id = request.get("game_id")
+
+    state = game_store.get(game_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="ゲームが見つかりません")
+
+    if state.phase != "night":
+        raise HTTPException(status_code=400, detail="夜フェーズではありません")
+
+    state.night_cheat_phase_done = True
+    state.pending_cheat = None
+
+    try:
+        state, npc_actions = await run_npc_turns(state)
+    except Exception:
+        npc_actions = []
+
+    return {
+        "state": _state_to_dict(state, "player_human"),
+        "npc_actions": npc_actions,
+    }
 
 
 @app.post("/api/game/end-night")

@@ -316,14 +316,25 @@ async function finalizeVote() {
       alert(`${data.hanged_player.name}が処刑されました。\n役職: ${roleLabel(data.hanged_player.role)}\n勝利条件: ${data.hanged_player.victory_condition}`);
     }
 
-    // Show NPC night actions if any
-    if (data.npc_actions && data.npc_actions.length > 0) {
-      addNightLogEntries(data.npc_actions);
+    // Log any NPC vs NPC cheat results
+    if (data.npc_cheat_results && data.npc_cheat_results.length > 0) {
+      data.npc_cheat_results.forEach(r => {
+        nightLog.push({ type: 'cheat', text: `[イカサマ] ${r.cheater} → ${r.target}: ${r.story}` });
+      });
     }
 
     myVoteTarget = null;
     selectedCards.clear();
     renderAll();
+
+    // Route to cheat phase
+    if (data.pending_cheat) {
+      showDefendPanel(data.pending_cheat.hint);
+    } else if (data.human_can_cheat) {
+      showCheatInitiatePanel();
+    } else {
+      await completeCheatPhase();
+    }
   } catch (e) {
     console.error(e);
     alert('エラーが発生しました: ' + e.message);
@@ -342,6 +353,9 @@ function renderNightPhase() {
   updateTurnIndicator();
   renderNightLog();
   renderHangedPanel();
+  // Update clear counter
+  const clearCount = $('clear-count');
+  if (clearCount) clearCount.textContent = gameState.table_clear_count || 0;
 }
 
 function renderNightPlayersList() {
@@ -535,6 +549,159 @@ async function passTurn() {
     }
   } catch (e) {
     console.error(e);
+  }
+}
+
+// ─── Cheat Phase ─────────────────────────────────────────────
+
+function hideAllCheatPanels() {
+  $('cheat-panel').classList.add('hidden');
+  $('defend-panel').classList.add('hidden');
+  $('cheat-result-panel').classList.add('hidden');
+}
+
+function showCheatInitiatePanel() {
+  hideAllCheatPanels();
+
+  // Populate target list with alive NPCs
+  const select = $('cheat-target');
+  select.innerHTML = '';
+  const npcs = gameState.players.filter(p => !p.is_human && !p.is_hanged && !p.is_out);
+  npcs.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = p.name;
+    select.appendChild(opt);
+  });
+
+  $('cheat-method').value = '';
+  $('cheat-panel').classList.remove('hidden');
+}
+
+function showDefendPanel(hint) {
+  hideAllCheatPanels();
+  $('cheat-hint-text').textContent = hint;
+  $('defense-method').value = '';
+  $('defend-panel').classList.remove('hidden');
+}
+
+function showCheatResult(title, story, revealText) {
+  hideAllCheatPanels();
+  $('cheat-result-title').textContent = title;
+  $('cheat-result-story').textContent = story;
+  const revealEl = $('cheat-result-reveal');
+  if (revealText) {
+    revealEl.textContent = revealText;
+    revealEl.classList.remove('hidden');
+  } else {
+    revealEl.classList.add('hidden');
+  }
+  $('cheat-result-panel').classList.remove('hidden');
+}
+
+// Cheat initiate submit
+$('cheat-submit-btn').addEventListener('click', async () => {
+  const targetId = $('cheat-target').value;
+  const method = $('cheat-method').value.trim();
+  if (!method) { alert('ズルの手口を入力してください'); return; }
+
+  $('cheat-submit-btn').disabled = true;
+  try {
+    const res = await fetch(`${API}/api/game/cheat-initiate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ game_id: gameId, cheater_id: playerId, target_id: targetId, method }),
+    });
+    const data = await res.json();
+    if (!res.ok) { alert(data.detail || 'エラー'); return; }
+    gameState = data.state;
+    const title = data.success ? '✔ イカサマ成功！' : '✘ イカサマ失敗…';
+    showCheatResult(title, data.story, null);
+  } catch (e) {
+    console.error(e);
+    alert('エラー: ' + e.message);
+  } finally {
+    $('cheat-submit-btn').disabled = false;
+  }
+});
+
+// Cheat skip
+$('cheat-skip-btn').addEventListener('click', async () => {
+  try {
+    await fetch(`${API}/api/game/cheat-skip`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ game_id: gameId, player_id: playerId }),
+    });
+  } catch (e) {
+    console.error(e);
+  }
+  hideAllCheatPanels();
+  await completeCheatPhase();
+});
+
+// Defense submit
+$('defense-submit-btn').addEventListener('click', async () => {
+  const defense = $('defense-method').value.trim();
+  if (!defense) { alert('対策を入力してください'); return; }
+
+  $('defense-submit-btn').disabled = true;
+  try {
+    const res = await fetch(`${API}/api/game/cheat-defend`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ game_id: gameId, defender_id: playerId, defense_method: defense }),
+    });
+    const data = await res.json();
+    if (!res.ok) { alert(data.detail || 'エラー'); return; }
+    gameState = data.state;
+    const title = data.success ? '⚠ イカサマを受けた！' : '✔ 防御成功！';
+    const reveal = data.cheater_revealed ? `正体を見破った！ 犯人: ${data.cheater_name}` : null;
+    showCheatResult(title, data.story, reveal);
+  } catch (e) {
+    console.error(e);
+    alert('エラー: ' + e.message);
+  } finally {
+    $('defense-submit-btn').disabled = false;
+  }
+});
+
+// Cheat result OK — proceed to card play
+$('cheat-result-ok').addEventListener('click', async () => {
+  hideAllCheatPanels();
+
+  // After a defend result, check if human can still cheat
+  const me = gameState.players.find(p => p.id === playerId);
+  const humanCanCheat = me && me.role === 'hinmin' && !me.cheat_used_this_night && !me.is_hanged;
+  if (humanCanCheat) {
+    showCheatInitiatePanel();
+  } else {
+    await completeCheatPhase();
+  }
+});
+
+async function completeCheatPhase() {
+  try {
+    const res = await fetch(`${API}/api/game/cheat-phase-complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ game_id: gameId }),
+    });
+    const data = await res.json();
+    gameState = data.state;
+
+    if (data.npc_actions && data.npc_actions.length > 0) {
+      addNightLogEntries(data.npc_actions);
+    }
+
+    renderAll();
+
+    if (gameState.game_over) {
+      setTimeout(renderGameOver, 800);
+    }
+  } catch (e) {
+    console.error(e);
+    renderAll();
   }
 }
 

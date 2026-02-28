@@ -9,6 +9,15 @@ class Role(str, Enum):
     HINMIN = "hinmin"   # 貧民 (Poor)
 
 
+class CheatEffectType(str, Enum):
+    REVEAL_HAND = "reveal_hand"  # 全員に手札公開
+    PEEK_HAND   = "peek_hand"    # 仕掛けた側だけ見える
+    STEAL_CARD  = "steal_card"   # ターゲットから1枚奪う
+    SWAP_CARD   = "swap_card"    # 1枚ずつ交換
+    SKIP_TURN   = "skip_turn"    # ターゲットが次ターンをスキップ
+    NO_EFFECT   = "no_effect"    # ズル失敗 or 反則判定
+
+
 class Suit(str, Enum):
     CLUBS = "clubs"
     DIAMONDS = "diamonds"
@@ -67,6 +76,22 @@ class Card(BaseModel):
         }
 
 
+class CheatEffect(BaseModel):
+    type: CheatEffectType
+    cheater_id: str
+    target_id: str
+    card_index: Optional[int] = None
+    story: str  # AI生成ナレーション
+
+
+class PendingCheat(BaseModel):
+    cheater_id: str
+    cheater_name: str
+    target_id: str
+    method: str   # ズル手口（ターゲットには非公開）
+    hint: str     # ターゲットへのぼんやりしたヒント
+
+
 class VictoryCondition(BaseModel):
     type: Literal["first_out", "revolution", "beat_target", "help_target"]
     target_npc_id: Optional[str] = None
@@ -91,6 +116,9 @@ class Character(BaseModel):
     is_hanged: bool = False
     is_human: bool = False
     cards_played_history: List[List[Card]] = Field(default_factory=list)  # history of played cards per round
+    cheat_used_this_night: bool = False
+    hand_revealed: bool = False   # ズル効果で手札が全員に見える
+    skip_next_turn: bool = False  # ズル効果で次ターンスキップ
 
     def hand_count(self) -> int:
         return len(self.hand)
@@ -128,6 +156,10 @@ class GameState(BaseModel):
     revolution_active: bool = False
     out_order: List[str] = Field(default_factory=list)  # order players went out
     hanged_today: Optional[str] = None  # ID of player hanged today
+    table_clear_count: int = 0           # この夜の場流れ回数（3で夜終了）
+    night_cheat_phase_done: bool = False # チートフェーズ完了フラグ
+    pending_cheat: Optional[PendingCheat] = None  # 人間が防御すべきNPCのズル
+    cheat_log: List[CheatEffect] = Field(default_factory=list)  # 解決済みチート記録
 
     def get_player(self, player_id: str) -> Optional[Character]:
         for p in self.players:

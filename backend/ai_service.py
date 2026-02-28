@@ -13,7 +13,8 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from mistralai import Mistral
 
 from models import (
-    Card, Character, GameState, Role, VictoryCondition, Relationship
+    Card, Character, CheatEffect, CheatEffectType, GameState, PendingCheat,
+    Role, VictoryCondition, Relationship
 )
 from game_engine import get_valid_plays
 
@@ -455,3 +456,220 @@ JSON: {{"target_id": "npc_xx"}}"""
         return random.choice(valid_ids)
     except Exception:
         return random.choice([p.id for p in candidates])
+
+
+# ─────────────────────────────────────────────
+# 4. Cheat (イカサマ) system
+# ─────────────────────────────────────────────
+
+async def generate_hint(cheater: Character, target: Character, state: GameState) -> str:
+    """Generate a vague hint for the target that something suspicious is coming."""
+    client = get_client()
+    prompt = f"""大富豪×人狼ゲームで、あるプレイヤーが別のプレイヤーに対してイカサマを仕掛けようとしています。
+ターゲットへの「何かが起きる気配を感じる」という曖昧なヒントを1文で生成してください。
+誰が・何をするかは絶対に明かさないでください。感覚的・雰囲気的な表現で。
+JSON: {{"hint": "ヒント文"}}"""
+
+    response = client.chat.complete(
+        model="mistral-small-latest",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.85,
+    )
+    try:
+        data = json.loads(response.choices[0].message.content)
+        return data.get("hint", "何か不穏な気配がする…")
+    except Exception:
+        return "何か不穏な気配がする…"
+
+
+async def generate_npc_cheat(
+    npc: Character,
+    state: GameState,
+) -> Optional[Tuple[str, str]]:
+    """
+    Decide if NPC cheats and choose target + method.
+    Returns (target_id, method_text) or None.
+    Only hinmin NPCs can cheat.
+    """
+    if npc.cheat_used_this_night or npc.role != Role.HINMIN:
+        return None
+
+    candidates = [p for p in state.alive_players() if p.id != npc.id]
+    if not candidates:
+        return None
+
+    candidates_info = [{"id": p.id, "name": p.name} for p in candidates]
+
+    prompt = f"""大富豪×人狼ゲームで、貧民の{npc.name}（{npc.personality}）がイカサマを仕掛けるか決定してください。
+生存者: {json.dumps(candidates_info, ensure_ascii=False)}
+性格: {npc.personality}
+勝利条件: {npc.victory_condition.description}
+
+イカサマを仕掛ける場合（40%の確率推奨）、ターゲットとズルの手口を決めてください。
+手口は「トランプのすり替え」「カードの盗み見」「偽の合図」など創造的に（1〜2文）。
+JSON: {{"cheat": true, "target_id": "...", "method": "手口の説明"}} または {{"cheat": false}}"""
+
+    client = get_client()
+    response = client.chat.complete(
+        model="mistral-small-latest",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.9,
+    )
+    try:
+        data = json.loads(response.choices[0].message.content)
+        if not data.get("cheat", False):
+            return None
+        target_id = data.get("target_id")
+        method = data.get("method", "")
+        valid_ids = [p.id for p in candidates]
+        if target_id not in valid_ids:
+            target_id = random.choice(valid_ids)
+        return (target_id, method)
+    except Exception:
+        return None
+
+
+async def generate_npc_defense(npc: Character, hint: str, state: GameState) -> str:
+    """Generate NPC defense response to a cheat hint."""
+    prompt = f"""{npc.name}（{npc.personality}）は「{hint}」という不穏な予感を感じています。
+大富豪ゲームの文脈で、{npc.name}として取る対策を1〜2文で答えてください（口調: {npc.speech_style}）。
+JSON: {{"defense": "対策内容"}}"""
+
+    client = get_client()
+    response = client.chat.complete(
+        model="mistral-small-latest",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.85,
+    )
+    try:
+        data = json.loads(response.choices[0].message.content)
+        return data.get("defense", "警戒する")
+    except Exception:
+        return "警戒する"
+
+
+async def judge_cheat(
+    cheater: Character,
+    target: Character,
+    cheat_text: str,
+    defense_text: str,
+    state: GameState,
+) -> CheatEffect:
+    """Judge the outcome of a cheat attempt using Mistral-large."""
+    prompt = f"""大富豪×人狼ゲームでイカサマ対決の審判をしてください。
+
+仕掛け人: {cheater.name}
+ターゲット: {target.name}
+ズルの手口: {cheat_text}
+ターゲットの対策: {defense_text}
+
+ゲーム効果の選択肢:
+- reveal_hand: ターゲットの手札を全員に公開（強力）
+- peek_hand: 仕掛け人だけターゲットの手札を見る
+- steal_card: ターゲットから1枚奪う
+- swap_card: 1枚ずつ交換
+- skip_turn: ターゲットが次ターンスキップ
+- no_effect: 失敗（手口が粗すぎるか、対策が有効だった）
+
+審判ルール:
+- ズルが成功すれば仕掛け人に有利な効果を選ぶ
+- 対策が有効なら no_effect
+- 即勝利・身体的危害は絶対に禁止（no_effect にする）
+- 手口のユニークさ・創造性も評価する
+
+JSON: {{"success": true/false, "effect_type": "...", "card_index": null, "story": "結果のナレーション（2〜3文、日本語）"}}"""
+
+    client = get_client()
+    response = client.chat.complete(
+        model="mistral-large-latest",
+        messages=[
+            {"role": "system", "content": "あなたはゲームマスターです。公平にイカサマ対決を審判してください。必ずJSON形式で返答してください。"},
+            {"role": "user", "content": prompt},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.8,
+    )
+    try:
+        data = json.loads(response.choices[0].message.content)
+        effect_type_str = data.get("effect_type", "no_effect")
+        try:
+            effect_type = CheatEffectType(effect_type_str)
+        except ValueError:
+            effect_type = CheatEffectType.NO_EFFECT
+
+        return CheatEffect(
+            type=effect_type,
+            cheater_id=cheater.id,
+            target_id=target.id,
+            card_index=data.get("card_index"),
+            story=data.get("story", "イカサマ対決が決着しました。"),
+        )
+    except Exception:
+        return CheatEffect(
+            type=CheatEffectType.NO_EFFECT,
+            cheater_id=cheater.id,
+            target_id=target.id,
+            story="イカサマは失敗に終わりました。",
+        )
+
+
+async def process_all_npc_cheats(
+    state: GameState,
+) -> Tuple[GameState, Optional[PendingCheat], List[Dict[str, Any]]]:
+    """
+    Process all NPC cheat attempts for the night.
+    - NPC vs NPC: fully auto-resolved
+    - NPC vs Human: returns PendingCheat for human to respond
+    Returns (updated_state, pending_cheat_or_None, list_of_resolved_effect_dicts)
+    """
+    from game_engine import apply_cheat_effect
+
+    hinmin_npcs = [
+        p for p in state.alive_players()
+        if not p.is_human and not p.cheat_used_this_night and p.role == Role.HINMIN
+    ]
+
+    pending_cheat: Optional[PendingCheat] = None
+    resolved_effects: List[Dict[str, Any]] = []
+
+    for npc in hinmin_npcs:
+        result = await generate_npc_cheat(npc, state)
+        if result is None:
+            continue
+
+        target_id, method = result
+        npc.cheat_used_this_night = True
+        target = state.get_player(target_id)
+        if target is None:
+            continue
+
+        if target.is_human:
+            # Generate vague hint for human, then await their defense
+            hint = await generate_hint(npc, target, state)
+            pending_cheat = PendingCheat(
+                cheater_id=npc.id,
+                cheater_name=npc.name,
+                target_id=target_id,
+                method=method,
+                hint=hint,
+            )
+            state.pending_cheat = pending_cheat
+            break  # Only one pending human-targeted cheat at a time
+
+        else:
+            # NPC vs NPC: auto-generate defense and resolve
+            defense = await generate_npc_defense(target, "何かイカサマを感じる", state)
+            effect = await judge_cheat(npc, target, method, defense, state)
+            state = apply_cheat_effect(state, effect)
+            resolved_effects.append({
+                "cheater": npc.name,
+                "target": target.name,
+                "effect_type": effect.type.value,
+                "story": effect.story,
+                "success": effect.type != CheatEffectType.NO_EFFECT,
+            })
+
+    return state, pending_cheat, resolved_effects

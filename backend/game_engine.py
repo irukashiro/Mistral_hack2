@@ -7,7 +7,7 @@ import uuid
 from typing import Dict, List, Optional, Tuple
 
 from models import (
-    Card, Character, GameState, Role, Suit,
+    Card, Character, CheatEffect, CheatEffectType, GameState, Role, Suit,
     NUMBER_STRENGTH, SUIT_STRENGTH, ChatMessage
 )
 
@@ -236,6 +236,7 @@ def apply_play(
         state.table = []
         state.last_played_by = None
         state.consecutive_passes = 0
+        state.table_clear_count += 1
         msg = f"8切り！場をリセットしました"
     else:
         state.table = cards
@@ -279,6 +280,7 @@ def apply_pass(state: GameState, player_id: str) -> Tuple[GameState, str]:
         state.table = []
         state.last_played_by = None
         state.consecutive_passes = 0
+        state.table_clear_count += 1
         msg += " — 場が流れました"
 
     state = _advance_turn(state)
@@ -287,7 +289,7 @@ def apply_pass(state: GameState, player_id: str) -> Tuple[GameState, str]:
 
 
 def _advance_turn(state: GameState) -> GameState:
-    """Move to next non-hanged, non-out player."""
+    """Move to next non-hanged, non-out player, skipping skip_next_turn players."""
     if not state.turn_order:
         return state
 
@@ -310,23 +312,41 @@ def _advance_turn(state: GameState) -> GameState:
         state.current_turn = active_ids[0]
         return state
 
-    # Find next active player
+    # Find next active player, respecting skip_next_turn
     n = len(state.turn_order)
-    for offset in range(1, n + 1):
-        next_pid = state.turn_order[(current_idx + offset) % n]
-        if next_pid in active_ids:
-            state.current_turn = next_pid
-            break
+    cur_pos = current_idx
+    for _ in range(n):
+        cur_pos = (cur_pos + 1) % n
+        next_pid = state.turn_order[cur_pos]
+        if next_pid not in active_ids:
+            continue
+        next_player = state.get_player(next_pid)
+        if next_player and next_player.skip_next_turn:
+            # Reset skip flag and continue searching from here
+            next_player.skip_next_turn = False
+            continue
+        state.current_turn = next_pid
+        return state
 
+    # Fallback: all remaining were skipped — go to first active
+    if active_ids:
+        state.current_turn = active_ids[0]
     return state
 
 
 def _check_night_end(state: GameState) -> GameState:
     """Check if the night phase should end and transition to day."""
+    # Always check if active players are nearly exhausted (game-over condition)
     active = state.active_players()
     if len(active) <= 1:
-        # Only 1 or 0 players left with cards — end the round
         state = check_victory(state)
+        return state
+
+    # 夜終了条件: 場が3回流れたら翌日へ
+    if state.table_clear_count >= 3:
+        state = check_victory(state)
+        if not state.game_over:
+            state = transition_to_day(state)
     return state
 
 
@@ -365,10 +385,16 @@ def transition_to_night(state: GameState) -> GameState:
     state.consecutive_passes = 0
     state.votes = {}
     state.hanged_today = None
+    state.table_clear_count = 0
+    state.night_cheat_phase_done = False
+    state.pending_cheat = None
+
+    for p in state.players:
+        p.cheat_used_this_night = False
+        p.skip_next_turn = False
 
     # Build turn order from alive players
     alive_ids = [p.id for p in state.alive_players()]
-    # Rotate so that the player after the last hanged or just the first goes first
     state.turn_order = alive_ids
     if alive_ids:
         state.current_turn = alive_ids[0]
@@ -475,6 +501,43 @@ def initialize_game(
         current_turn=turn_order[0],
     )
 
+    return state
+
+
+# ─────────────────────────────────────────────
+# Cheat effect application
+# ─────────────────────────────────────────────
+
+def apply_cheat_effect(state: GameState, effect: CheatEffect) -> GameState:
+    """Apply a resolved cheat effect to the game state."""
+    cheater = state.get_player(effect.cheater_id)
+    target = state.get_player(effect.target_id)
+
+    if effect.type == CheatEffectType.REVEAL_HAND:
+        if target:
+            target.hand_revealed = True
+
+    elif effect.type == CheatEffectType.STEAL_CARD:
+        if cheater and target and target.hand:
+            idx = effect.card_index if effect.card_index is not None else 0
+            idx = min(idx, len(target.hand) - 1)
+            card = target.hand.pop(idx)
+            cheater.hand.append(card)
+
+    elif effect.type == CheatEffectType.SWAP_CARD:
+        if cheater and target and cheater.hand and target.hand:
+            c_idx = effect.card_index if effect.card_index is not None else 0
+            c_idx = min(c_idx, len(cheater.hand) - 1)
+            t_idx = 0
+            cheater.hand[c_idx], target.hand[t_idx] = target.hand[t_idx], cheater.hand[c_idx]
+
+    elif effect.type == CheatEffectType.SKIP_TURN:
+        if target:
+            target.skip_next_turn = True
+
+    # peek_hand and no_effect: no state change needed
+
+    state.cheat_log.append(effect)
     return state
 
 

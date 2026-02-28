@@ -92,6 +92,48 @@
 
       <!-- ===== NIGHT PHASE ===== -->
       <div id="night-phase" class="phase-panel hidden">
+
+        <!-- Cheat Initiate Panel (human hinmin can cheat) -->
+        <div id="cheat-panel" class="cheat-overlay hidden">
+          <div class="cheat-box">
+            <h3 class="cheat-title">⚠ イカサマフェーズ</h3>
+            <p class="cheat-desc">あなたは貧民です。誰かにイカサマを仕掛けますか？</p>
+            <label class="cheat-label">ターゲット</label>
+            <select id="cheat-target" class="cheat-select"></select>
+            <label class="cheat-label">ズルの手口を入力（自由記述）</label>
+            <textarea id="cheat-method" class="cheat-textarea" placeholder="例：ポケットに隠したカードとすり替える…" rows="3"></textarea>
+            <div class="cheat-actions">
+              <button id="cheat-submit-btn" class="btn-primary">ズルを仕掛ける</button>
+              <button id="cheat-skip-btn" class="btn-secondary">今回はやめる</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Defend Panel (NPC targeted human) -->
+        <div id="defend-panel" class="cheat-overlay hidden">
+          <div class="cheat-box">
+            <h3 class="cheat-title">⚠ 何かが起きる気配が…</h3>
+            <p id="cheat-hint-text" class="cheat-hint"></p>
+            <label class="cheat-label">対策を入力してください</label>
+            <textarea id="defense-method" class="cheat-textarea" placeholder="例：カードをしっかり握って離さない…" rows="3"></textarea>
+            <div class="cheat-actions">
+              <button id="defense-submit-btn" class="btn-primary">対策を実行する</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Cheat Result Panel -->
+        <div id="cheat-result-panel" class="cheat-overlay hidden">
+          <div class="cheat-box">
+            <h3 id="cheat-result-title" class="cheat-title"></h3>
+            <p id="cheat-result-story" class="cheat-story"></p>
+            <p id="cheat-result-reveal" class="cheat-reveal hidden"></p>
+            <div class="cheat-actions">
+              <button id="cheat-result-ok" class="btn-primary">続ける</button>
+            </div>
+          </div>
+        </div>
+
         <div class="night-layout">
 
           <!-- Left: Other players -->
@@ -103,7 +145,10 @@
           <!-- Center: Table & Actions -->
           <section class="night-center">
             <div class="table-area">
-              <div class="table-label">場のカード</div>
+              <div class="table-label-row">
+                <span class="table-label">場のカード</span>
+                <span class="clear-counter">場流れ: <span id="clear-count">0</span>/3</span>
+              </div>
               <div id="table-cards" class="table-cards">
                 <span class="empty-table">（場は空き）</span>
               </div>

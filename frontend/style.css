@@ -698,6 +698,141 @@ body {
 .winner-item.you { border-color: var(--gold); color: var(--gold-light); }
 
 /* ============================================================
+   Table label row with clear counter
+   ============================================================ */
+.table-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.6rem;
+}
+
+.clear-counter {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.15rem 0.5rem;
+}
+
+.clear-counter #clear-count {
+  font-weight: bold;
+  color: var(--gold);
+}
+
+/* ============================================================
+   Cheat / Defend / Result Panels (overlay)
+   ============================================================ */
+.cheat-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(5, 5, 12, 0.92);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.25s ease;
+}
+
+#night-phase {
+  position: relative;
+}
+
+.cheat-box {
+  background: var(--bg-panel);
+  border: 1px solid #6a3a18;
+  border-radius: var(--radius);
+  padding: 2rem 2.5rem;
+  max-width: 480px;
+  width: 100%;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.8), 0 0 24px rgba(200,100,30,0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.cheat-title {
+  font-family: var(--font-serif);
+  font-size: 1.3rem;
+  color: #e08040;
+  text-align: center;
+  margin-bottom: 0.3rem;
+}
+
+.cheat-desc {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.cheat-hint {
+  font-size: 1rem;
+  color: var(--text-primary);
+  font-style: italic;
+  text-align: center;
+  border-left: 3px solid #6a3a18;
+  padding-left: 0.8rem;
+  margin: 0.3rem 0;
+}
+
+.cheat-label {
+  font-size: 0.8rem;
+  color: var(--gold);
+  letter-spacing: 0.05em;
+}
+
+.cheat-select {
+  padding: 0.6rem 0.9rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  font-family: var(--font-sans);
+  outline: none;
+}
+.cheat-select:focus { border-color: #e08040; }
+.cheat-select option { background: var(--bg-card); }
+
+.cheat-textarea {
+  padding: 0.7rem 0.9rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  font-family: var(--font-sans);
+  resize: vertical;
+  outline: none;
+  min-height: 70px;
+}
+.cheat-textarea:focus { border-color: #e08040; }
+
+.cheat-story {
+  font-size: 0.95rem;
+  color: var(--text-primary);
+  line-height: 1.7;
+  text-align: center;
+}
+
+.cheat-reveal {
+  font-size: 0.85rem;
+  color: var(--red-light);
+  text-align: center;
+  font-weight: bold;
+}
+
+.cheat-actions {
+  display: flex;
+  gap: 0.8rem;
+  justify-content: center;
+  margin-top: 0.4rem;
+}
+
+.night-log-entry.cheat { color: #e08040; font-style: italic; }
+
+/* ============================================================
    Scrollbars
    ============================================================ */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
