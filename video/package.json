@@ -1,0 +1,21 @@
+{
+  "name": "class-conflict-video",
+  "version": "1.0.0",
+  "description": "Promotional video for Class Conflict: Millionaire",
+  "scripts": {
+    "start": "remotion studio",
+    "build": "remotion render src/index.ts MainComposition out/video.mp4",
+    "render": "remotion render src/index.ts MainComposition out/video.mp4 --codec=h264"
+  },
+  "dependencies": {
+    "remotion": "^4.0.0",
+    "@remotion/cli": "^4.0.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.0.0",
+    "@remotion/eslint-config": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
