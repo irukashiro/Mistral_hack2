@@ -334,6 +334,19 @@ async def start_game(request: StartGameRequest):
     # Initialize game
     state = initialize_game(all_characters, human_id)
 
+    # Set game mode from request (hard/lite)
+    state.game_mode = request.game_mode
+
+    # Lite-mode specific initializations: assign detective role and init trust/affinity
+    if request.game_mode == "lite":
+        # assign exactly one detective among HEIMIN (may be human)
+        assign_detective_role_lite(state.players)
+        # initialize trust/affinity matrices
+        try:
+            state = init_trust_affinity(state)
+        except Exception:
+            pass
+
     # 4. Save world setting to state
     state.world_setting = world_setting
 
@@ -512,6 +525,20 @@ async def chat(request: ChatRequest):
         turn=state.day_number,
     ))
 
+    # Detect role claims (CO) in player's message and log as fact
+    try:
+        txt = (message or "").lower()
+        if "探偵" in message or "detective" in txt:
+            log_role_co_fact(state, player_id, player_name, "detective")
+        if "平民" in message:
+            log_role_co_fact(state, player_id, player_name, "heimin")
+        if "貧民" in message:
+            log_role_co_fact(state, player_id, player_name, "hinmin")
+        if "富豪" in message:
+            log_role_co_fact(state, player_id, player_name, "fugo")
+    except Exception:
+        pass
+
     # Generate NPC responses (pass world setting for richer references)
     try:
         npc_responses = await generate_npc_speeches_for_player_message(
@@ -537,11 +564,30 @@ async def chat(request: ChatRequest):
                 "detail": {"text": resp["text"]},
                 "turn": state.day_number,
             })
+        # Detect role claims (CO) in NPC speech and log as fact
+        try:
+            rtxt = resp.get("text", "")
+            if "探偵" in rtxt:
+                log_role_co_fact(state, resp["npc_id"], resp["name"], "detective")
+            if "平民" in rtxt:
+                log_role_co_fact(state, resp["npc_id"], resp["name"], "heimin")
+            if "貧民" in rtxt:
+                log_role_co_fact(state, resp["npc_id"], resp["name"], "hinmin")
+            if "富豪" in rtxt:
+                log_role_co_fact(state, resp["npc_id"], resp["name"], "fugo")
+        except Exception:
+            pass
 
     # Extract investigation facts from NPC responses
     try:
         new_facts = await detect_investigation_facts(npc_responses, state)
         state.investigation_notes = (state.investigation_notes + new_facts)[-20:]
+    except Exception:
+        pass
+
+    # Recompute logic state after new facts/COs
+    try:
+        state.logic_state = compute_logic_state(state)
     except Exception:
         pass
 
