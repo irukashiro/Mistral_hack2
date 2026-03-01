@@ -1,224 +1,246 @@
 # Class Conflict: Millionaire
-### 大富豪 × 人狼 × AI生成キャラクター　— v2.2
+### 大富豪 × 人狼 × AI感情シミュレーション
 
-Mistral AI を使ったハッカソン作品。
-AI が生成した共有世界設定・キャラクター・関係図を土台に、大富豪（カードゲーム）と人狼を融合したブラウザゲーム。
+> *"It's not about card strength — it's about deception, alliance, and execution."*
 
----
+A browser-based death-game adventure that reinvents the classic Japanese card game *Daifugo* (Rich Man, Poor Man) by fusing it with social deduction and **Mistral AI-powered characters**.
 
-## ゲーム概要
-
-プレイヤーは**記憶喪失の人物**として、AI が生成した世界に放り込まれる。
-過去の事件に関わっていたはずだが、何も思い出せない——NPCとの会話の中で、少しずつ真実が明かされる。
-
-| フェーズ | 内容 |
-|:--------|:-----|
-| **昼（人狼）** | チャットで議論 → 投票 → 処刑。NPCはそれぞれの戦略で動く |
-| **イカサマフェーズ** | 夜移行直前。貧民は不正を仕掛け、ターゲットは感覚で防ぐ |
-| **夜（大富豪）** | 全員でカードプレイ。3回場が流れると翌日へ |
+**Mistral AI Hackathon 2026**
 
 ---
 
-## 実装機能一覧
+## Demo Video
 
-### AI 生成コンテンツ
-
-| 機能 | モデル | 内容 |
-|:----|:-------|:-----|
-| **ワールド設定生成** | mistral-large | 舞台・事件・派閥・1000字以上の事件全貌・プレイヤーの秘密の素性を生成 |
-| **キャラクター生成** | mistral-large | 世界設定を参照したバックストーリー（3〜5文・固有名詞必須）、関係（最低2つ・種類+エピソード形式） |
-| **人間プレイヤーの関係生成** | mistral-small | 世界設定を踏まえた具体的な共有エピソード付き関係を生成。NPCへの逆参照も注入 |
-| **NPC 昼発言** | mistral-small | 議論スタイル・世界設定・関係を参照した戦略的発言。バトン（次発言者指定）付き |
-| **NPC 投票判断** | mistral-small | 勝利条件・会話履歴を踏まえた投票先決定 |
-| **NPC カードプレイ判断** | mistral-small | 手役・勝利条件を踏まえたプレイ選択。ひとことコメント付き |
-| **イカサマ審判** | mistral-large | 手口 vs 対策の3段階判定（大成功/引き分け/大失敗）。過剰防衛ペナルティあり |
-| **記憶の断片生成** | mistral-small | NPC発言からプレイヤーの真の素性を暗示する断片を抽出（40%確率） |
-| **夜の状況テキスト** | mistral-small | 夜移行時の雰囲気描写（1〜2文） |
-| **ヒント生成** | mistral-small | プレイヤーへの戦略ヒント3件 + 発言テンプレート3件 |
-| **捜査メモ抽出** | mistral-small | NPC発言から推理に使える事実を自動抽出 |
+> `video/out/video.mp4` — 120-second presentation rendered with [Remotion](https://www.remotion.dev/)
 
 ---
 
-### ゲームロジック（大富豪）
+## What is this?
 
-| 機能 | 内容 |
-|:----|:-----|
-| 54枚デッキ | トランプ52枚 + ジョーカー2枚 |
-| カードの強さ | 3（弱）〜 2（強）。スート: ♠ > ♥ > ♦ > ♣ |
-| 手役 | シングル / ペア / トリプル / クアッド / シーケンス（同スート3枚以上連続） |
-| 8切り | 8を出すと場をリセット |
-| 革命 | クアッドで強弱逆転 |
-| ジョーカー | ワイルドカード兼最強 |
-| 夜終了条件 | 場が3回流れたら翌日へ |
+Five strangers are locked in a closed space and secretly assigned to one of three classes:
 
----
+| Class | Count | Goal |
+|:------|:-----:|:-----|
+| **Fugo (富豪 · Rich)** | 1 | Blend in, win at cards, escape execution |
+| **Hinmin (貧民 · Poor)** | 1 | Use AI-powered bluffs to sabotage and frame the Fugo |
+| **Heimin (平民 · Commoner)** | 3 | Find and execute the hidden threats |
 
-### 勝利条件システム
+**Night:** Players compete in Daifugo (card game) — but every strong card becomes evidence.
+**Day:** Players debate, accuse, and vote to execute the most suspicious person.
 
-**公開勝利条件**（`victory_condition`）
-
-| タイプ | 発動条件 |
-|:------|:--------|
-| `first_out` | 最初に手札を出し切る |
-| `revolution` | 革命が発生する |
-| `beat_target` | 指定相手が処刑または自分より後に上がる |
-| `help_target` | 指定相手が最初に上がる |
-
-**隠れ勝利条件**（`true_win`）
-
-| タイプ | 発動条件 |
-|:------|:--------|
-| `revenge_on` | 指定相手が処刑または自分より後に上がる |
-| `protect` | 指定相手が最初に上がる |
-| `climber` | 自分が最初に上がる |
-| `martyr` | 自分が処刑される |
-| `class_default` | 通常の勝利条件に従う |
-
-**瞬間勝利判定**（`check_instant_victories`）
-以下のイベントで即座にチェック → 達成したら即リザルト遷移：
-- 処刑直後 → `martyr` / `revenge_on` / `beat_target`
-- 誰かが上がった直後 → `first_out` / `climber` / `help_target` / `protect`
-- 革命発動時 → `revolution`
+Cards played at night become testimony in the courtroom of the day meeting. The card table is the crime scene.
 
 ---
 
-### UI 機能
+## Key Features
 
-| 機能 | 内容 |
-|:----|:-----|
-| **神の目モード（👁）** | NPC の役職・バックストーリー・真の目標をオーバーレイ表示。localStorage で状態保存 |
-| **ヒントパネル** | 💡ボタンで展開。戦略ヒント + 発言テンプレートボタン |
-| **捜査メモ帳** | NPC発言から自動抽出した推理ヒントを蓄積 |
-| **記憶の断片パネル** | 🌀 会話中にプレイヤーの真の素性に関する断片が解放される。新断片で自動展開 |
-| **ゴーストモード** | 処刑されたプレイヤーが観戦継続。2秒ごとにNPCターンを自動進行 |
-| **夜バナー** | 革命バナー / 夜状況バナー / ゴーストモードバナー |
-| **夜ログ** | NPC のひとこと + カードプレイ履歴を表示 |
-| **イカサマパネル** | 手口自由入力 / 警戒カテゴリ選択（視覚/聴覚/触覚/場/背後） / 結果表示 |
+### AI-Judged Decoy Bluff System
+The headline mechanic — powered by Mistral AI.
 
----
+The **Hinmin** player types two free-form actions:
+- **【陽動 / Decoy】** — a misdirection to draw attention
+- **【本命 / Real Action】** — the actual card theft
 
-### リザルト画面
+The target sees only the Decoy and has **5 seconds / 15 characters** to react.
+Mistral AI judges the outcome in three tiers:
 
-ゲーム終了時（勝利条件達成 or 自然終了）に全真相を開示：
+| Result | Condition | Effect |
+|:-------|:----------|:-------|
+| **Big Success** | Target falls for the decoy | Cards stolen, cheat stays hidden |
+| **Draw** | Target guards correctly | Cheat fails, hidden |
+| **Big Fail** | Target physically counters | Cheat exposed, cheater penalized |
 
-1. **世界設定 · 真相** — タイトル・舞台・過去の出来事・派閥 + 事件全貌テキスト（1000字以上）
-2. **あなたの真の素性** — `player_secret_backstory` の全開示 + 収集した記憶の断片一覧
-3. **キャラクター一覧** — 役職・バックストーリー・議論スタイル・真の目標
-4. **関係図** — 全キャラクター間の関係をフラットリストで表示
-5. **イカサマ記録** — 成功/引き分け/大失敗の判定 + ナレーション
+> Raw verbal deception, judged in real time.
 
 ---
 
-## データモデル
+### Human-like NPC AI
 
-### `GameState` フィールド
+NPCs are driven by two axes: **Trust (logic)** × **Affinity (emotion)**
 
-| フィールド | 型 | 説明 |
-|:----------|:---|:-----|
-| `game_id` | str | UUID |
-| `phase` | "day" \| "night" | 現フェーズ |
-| `day_number` | int | 日数 |
-| `players` | List[Character] | 全プレイヤー |
-| `table` | List[Card] | 場のカード |
-| `turn_order` | List[str] | ターン順（ID） |
-| `current_turn` | str | 現在のターン |
-| `votes` | Dict[str, str] | voter_id → target_id |
-| `chat_history` | List[ChatMessage] | チャット履歴 |
-| `revolution_active` | bool | 革命状態 |
-| `out_order` | List[str] | 上がり順（ID） |
-| `table_clear_count` | int | この夜の場流れ回数（3で夜終了） |
-| `pending_cheat` | PendingCheat? | 人間への未解決イカサマ |
-| `cheat_log` | List[CheatEffect] | イカサマ記録 |
-| `night_situation` | str | 夜の状況テキスト |
-| `investigation_notes` | List[str] | 捜査メモ（最大20件） |
-| `world_setting` | dict | ワールド設定（full_incident・factions等） |
-| `amnesia_clues` | List[str] | 記憶の断片（最大15件） |
+Four personality types create dramatically different behavior:
 
-### `Character` 主要フィールド
+| Type | Behavior |
+|:-----|:---------|
+| **論理型 Logical** | Derives werewolf theory on its own — roller tactics, line analysis, confirmed-safe deduction |
+| **感情型 Emotional** | Understands the logic, then ignores it to protect someone it likes |
+| **ヘイト回避型 Passive** | Avoids conflict, follows consensus, hard to read |
+| **破滅型 Chaotic** | Acts unpredictably, disrupts strategies, creates noise |
 
-| フィールド | 型 | 説明 |
-|:----------|:---|:-----|
-| `role` | fugo \| heimin \| hinmin | 役職 |
-| `backstory` | str | 3〜5文・固有名詞入り |
-| `relationships` | List[Relationship] | 最低2つ・種類+エピソード形式 |
-| `argument_style` | str | 慎重派/扇動者/論理派/便乗派/狂信者 |
-| `victory_condition` | VictoryCondition | 公開勝利条件 |
-| `true_win` | TrueWinCondition? | 隠れ勝利条件 |
-| `hand_revealed` | bool | イカサマで手札が全公開中 |
-| `skip_next_turn` | bool | 次ターンスキップ中 |
+The Logical AI derives legitimate werewolf-game tactics autonomously from the Trust/Affinity matrix. The Emotional AI understands those tactics — then overrides them for irrational, human reasons. **This contradiction is what creates extraordinary drama.**
 
 ---
 
-## API エンドポイント
+### AI-Generated World, Every Playthrough
 
-| Method | Path | 説明 |
-|:-------|:-----|:-----|
-| POST | `/api/game/start` | ワールド設定生成 → キャラ生成 → カード配布 |
-| GET  | `/api/game/state` | ゲーム状態取得（ゴーストモード時は全情報開示） |
-| GET  | `/api/game/hints` | 戦略ヒント + 発言テンプレート生成（昼のみ） |
-| GET  | `/api/game/debug-state` | 神の目モード用：全情報開示 |
-| GET  | `/api/game/result` | リザルト用：世界設定・全キャラ・関係図・イカサマ記録 |
-| POST | `/api/game/chat` | 発言 → NPC応答 + 捜査メモ更新 + 記憶断片解放 |
-| POST | `/api/game/vote` | 投票記録 |
-| POST | `/api/game/npc-votes` | NPC 投票実行 |
-| POST | `/api/game/finalize-vote` | 処刑 → 瞬間勝利チェック → 夜移行 |
-| POST | `/api/game/cheat-initiate` | 人間がNPCにイカサマ仕掛け |
-| POST | `/api/game/cheat-defend` | 人間がNPCのイカサマを防御 |
-| POST | `/api/game/cheat-skip` | イカサマをスキップ |
-| POST | `/api/game/cheat-phase-complete` | イカサマフェーズ終了 → NPCターン開始 |
-| POST | `/api/game/play-cards` | 夜：カードプレイ → NPCターン連鎖 |
-| POST | `/api/game/pass` | 夜：パス → NPCターン連鎖 |
-| POST | `/api/game/ghost-advance` | ゴーストモード：NPCターンを強制進行 |
-| POST | `/api/game/end-night` | 夜フェーズを手動終了 |
-| GET  | `/api/game/list` | 稼働中ゲーム一覧（デバッグ） |
-| POST | `/api/game/{game_id}/delete` | ゲーム削除 |
+Mistral AI generates the entire game world from scratch before each session:
+
+| Component | Model | Output |
+|:----------|:------|:-------|
+| World Setting + Incident | `mistral-large` | Setting, factions, 1000+ character incident narrative |
+| Characters + Backstories | `mistral-large` | Names, history, relationships with shared episodes |
+| Cheat Judgment | `mistral-large` | Contextual 3-tier judgment of decoy vs. defense |
+| NPC Speech | `mistral-small` | Personality + relationship-driven strategic dialogue |
+| NPC Vote Decision | `mistral-small` | Autonomous voting from Trust scores + logic flags |
+| Detective Report | `mistral-small` | Evidence-based investigation summary |
+| Night Atmosphere | `mistral-small` | Immersive scene text generated each night |
+| Conversational Hints | `mistral-small` | Suggested dialogue lines for new players |
 
 ---
 
-## ディレクトリ構成
+### Two-Layer Class × Role System
+
+Beyond the three-faction class war, each character carries a **secret role**:
+
+- **探偵 Detective** — Investigates and generates evidence reports
+- **ボディガード Bodyguard** — Protects a target from execution
+- **共犯者 Accomplice** — Hidden ally with a shared secret mission
+
+Plus a **True Win condition** — a personal hidden objective assigned by AI, e.g.:
+> *"Protect Tanaka from execution at any cost."*
+> *"Be executed — it's the only way to win."*
+
+At the game-end reveal screen, every hidden condition fires simultaneously — delivering a powerful **伏線回収 (foreshadowing payoff)** moment.
+
+---
+
+### Player-Assist UX
+
+Designed so anyone can enjoy complex social deduction:
+
+| Feature | Description |
+|:--------|:------------|
+| **AI Dialogue Suggestions** | 3 context-aware suggested lines, one-click to speak |
+| **Auto Investigation Memo** | AI extracts logical clues from NPC speech automatically |
+| **Memory Fragment Panel** | Amnesia narrative: your true identity revealed in fragments as you talk |
+| **God's-Eye Mode (👁)** | Even after execution, watch the full drama with all secrets visible |
+
+---
+
+## Game Flow
+
+```
+Setup → AI generates world + characters + relationships
+  │
+  ▼
+[Night] ── Daifugo card battle
+  │         NPCs react to strong cards in real time
+  │         Hinmin's Decoy Bluff phase
+  │
+  ▼
+[Day] ── Debate & Accusation
+  │       NPCs apply personality-driven logic
+  │       Player votes → Execution
+  │       Instant win-condition checks
+  │
+  └──► Repeat until game ends
+         │
+         ▼
+      [Result Screen] — Full reveal:
+        All true classes, secret roles, hidden win conditions,
+        relationship map, incident full-text, cheat log
+```
+
+---
+
+## Architecture
 
 ```
 Mistral_hack2/
 ├── backend/
-│   ├── main.py          # FastAPI エンドポイント（全19本）
-│   ├── game_engine.py   # 大富豪ロジック（純粋関数）+ 勝利判定
-│   ├── ai_service.py    # Mistral AI 連携（関数20本）
-│   ├── models.py        # Pydantic モデル（クラス30個）
+│   ├── main.py          # FastAPI — 29 API endpoints (Hard + Lite modes)
+│   ├── game_engine.py   # Daifugo logic (pure functions) + win condition checks
+│   ├── ai_service.py    # Mistral AI integration — 20+ functions
+│   ├── models.py        # Pydantic models — 30+ classes
 │   └── requirements.txt
 ├── frontend/
-│   ├── index.html       # ゲーム画面（セットアップ / ゲーム / リザルト）
-│   ├── style.css        # ダークゴシックテーマ（黒×金）
-│   └── app.js           # Vanilla JS フロントエンド
-├── .env.example
-├── README.md
-└── AGENTS.md
+│   ├── index.html       # Single-page game UI (Setup / Game / Result)
+│   ├── style.css        # Dark gothic theme — black × gold
+│   └── app.js           # Vanilla JS frontend
+├── video/
+│   ├── src/             # Remotion TypeScript video source (9 scenes)
+│   └── out/video.mp4    # Rendered 120s presentation
+├── slides.html          # Hackathon presentation slides
+├── com.md               # Talk script (EN/JA)
+├── SETTING.md           # Full game design document (v2.0 → v4.0)
+└── AGENTS.md            # AI agent behavior specifications
 ```
 
 ---
 
-## セットアップ
+## Tech Stack
+
+| Layer | Technology |
+|:------|:-----------|
+| Backend | Python · FastAPI · Uvicorn |
+| AI | Mistral AI (`mistral-large`, `mistral-small`) |
+| Frontend | Vanilla JS · HTML · CSS |
+| Video | Remotion (React + TypeScript) |
+| Data | In-memory store (Pydantic models) |
+
+---
+
+## Daifugo Rules Implemented
+
+| Rule | Detail |
+|:-----|:-------|
+| 54-card deck | Standard 52 + 2 Jokers |
+| Card strength | 3 (weakest) → 2 (strongest); suits: ♠ > ♥ > ♦ > ♣ |
+| Hand types | Single / Pair / Triple / Quad / Sequence (3+ same-suit consecutive) |
+| 8-cut | Playing an 8 clears the table |
+| Revolution | Quad play reverses all strength rankings |
+| Joker | Wildcard and absolute strongest |
+| Night-end | Table clears 3 times → advance to next day |
+
+---
+
+## Setup & Run
 
 ```bash
+# 1. Clone
+git clone https://github.com/irukashiro/Mistral_hack2.git
+cd Mistral_hack2
+
+# 2. Install backend dependencies
 cd backend
 pip install -r requirements.txt
 
-# .env.example をコピーして MISTRAL_API_KEY を設定
+# 3. Set your Mistral API key
 cp ../.env.example .env
+# Edit .env and set MISTRAL_API_KEY=your_key_here
 
+# 4. Start the server
 uvicorn main:app --reload
-```
 
-ブラウザで `http://localhost:8000` を開く。
+# 5. Open in browser
+# http://localhost:8000
+```
 
 ---
 
-## バージョン履歴
+## API Reference (Selected)
 
-| バージョン | 追加内容 |
-|:----------|:--------|
-| v1.0 | 初期実装（大富豪 + 人狼基本フロー） |
-| v1.1 | イカサマシステム + 夜終了条件 |
-| v1.2 | 3段階イカサマ判定 / バトン / TrueWin / NightSituation / argument_style |
-| v2.0 | 神の目 / ヒントパネル / 捜査メモ / ゴーストモード / 夜ログ発言 / リッチリザルト |
-| v2.1 | ワールド設定生成 / キャラバックストーリー強化 / 関係エピソード化 / NPC発言に世界設定注入 |
-| v2.2 | 記憶喪失プレイヤー / 記憶の断片パネル / 事件全貌1000字生成 / 瞬間勝利判定 / リザルト全真相開示 |
+| Method | Endpoint | Description |
+|:-------|:---------|:------------|
+| POST | `/api/game/start-lite` | Start Lite mode — generate world, chars, deal cards |
+| GET  | `/api/game/state` | Full game state (God's-Eye mode returns all secrets) |
+| POST | `/api/game/lite/chat` | Day: player speaks, NPCs respond with personality + foreshadowing |
+| POST | `/api/game/lite/npc-votes` | NPCs cast votes autonomously |
+| POST | `/api/game/finalize-vote` | Execute hanging → instant win check → transition to night |
+| POST | `/api/game/lite/cheat-decoy` | Hinmin submits Decoy + Real Action |
+| POST | `/api/game/lite/cheat-react` | Target reacts to Decoy (15 char / 5 sec limit) |
+| POST | `/api/game/play-cards` | Night: play cards → NPC chain reactions |
+| GET  | `/api/game/result` | Full reveal: world, all chars, relationships, cheat log |
+
+---
+
+## Powered by Mistral AI
+
+This project uses Mistral AI exclusively for all generative components:
+- `mistral-large` for world-building and cheat judgment (high reasoning required)
+- `mistral-small` for real-time NPC actions (low latency required)
+- Structured JSON output (`response_format={"type": "json_object"}`) throughout
+
+---
+
+*Built for Mistral AI Hackathon 2026*
