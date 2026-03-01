@@ -23,6 +23,136 @@ let detectiveUsed = false; // whether ability has been used
 let autoMode = false;
 let autoRunning = false;  // prevent concurrent auto runs
 
+// i18n
+let currentLang = localStorage.getItem('ccm_lang') || 'ja';
+const I18N = {
+  ja: {
+    auto_mode: '⚡ AUTO',
+    device_toggle: '📱 端末',
+    goto_result: '📋 リザルト',
+    debug_toggle: '👁',
+    tagline: '大富豪 × 人狼 × AI',
+    label_player_name: 'あなたの名前',
+    player_name_placeholder: '名前を入力...',
+    start_game: 'ゲーム開始',
+    chat_input_placeholder: '発言する...',
+    chat_send: '送信',
+    hints_toggle: '💡 ヒント表示',
+    collect_votes: 'NPCに投票させる',
+    finalize_vote: '投票確定・処刑',
+    finalize_confirm: '投票を確定して処刑を実行しますか？',
+    error_generic: 'エラーが発生しました',
+    label_survivors: '生存者',
+    label_votes: '投票',
+    hand_count_template: '手札: {n}枚',
+    no_hints: '（現在利用可能なヒントはありません）',
+    ghost_mode_banner: '👻 ゴーストモード — 観戦中。すべての真実が見えます',
+    auto_day_prompt_last_speak: '投票の前に最後の発言をどうぞ。誰を処刑すべきか、理由とともに述べてください。',
+    notes_label: '📝 捜査メモ',
+    amnesia_label: '🌀 記憶の断片',
+    your_hand_label: 'あなたの手札',
+    role_fugo: '富豪',
+    role_heimin: '平民',
+    role_hinmin: '貧民',
+    phase_day: '昼',
+    phase_night: '夜',
+    game_role_detective: '🔍 探偵',
+    game_role_accomplice: '🤝 共犯者',
+  },
+  en: {
+    auto_mode: '⚡ AUTO',
+    device_toggle: '📱 Device',
+    goto_result: '📋 Result',
+    debug_toggle: '👁 Debug',
+    tagline: 'Daifugo × Werewolf × AI',
+    label_player_name: 'Your name',
+    player_name_placeholder: 'Enter name...',
+    start_game: 'Start Game',
+    chat_input_placeholder: 'Say something...',
+    chat_send: 'Send',
+    hints_toggle: '💡 Show Hints',
+    collect_votes: 'Ask NPCs to vote',
+    finalize_vote: 'Finalize Vote / Hang',
+    finalize_confirm: 'Confirm finalize vote and execute hanging?',
+    error_generic: 'An error occurred',
+    label_survivors: 'Survivors',
+    label_votes: 'Votes',
+    hand_count_template: 'Hand: {n}',
+    no_hints: '(No hints available)',
+    ghost_mode_banner: '👻 Ghost Mode — Spectating. All truths are visible',
+    auto_day_prompt_last_speak: 'Final speeches before voting. State who to hang and why.',
+    notes_label: '📝 Investigation Notes',
+    amnesia_label: '🌀 Amnesia Clues',
+    your_hand_label: 'Your Hand',
+    role_fugo: 'Fugo',
+    role_heimin: 'Heimin',
+    role_hinmin: 'Hinmin',
+    phase_day: 'Day',
+    phase_night: 'Night',
+    game_role_detective: '🔍 Detective',
+    game_role_accomplice: '🤝 Accomplice',
+  }
+};
+
+function t(key) {
+  return (I18N[currentLang] && I18N[currentLang][key]) || key;
+}
+
+function applyI18n() {
+  // elements with data-i18n -> textContent
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const k = el.getAttribute('data-i18n');
+    el.textContent = t(k);
+  });
+  // placeholders
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+    const k = el.getAttribute('data-i18n-placeholder');
+    if (el.placeholder !== undefined) el.placeholder = t(k);
+  });
+  // update lang button active state
+  const ja = document.getElementById('lang-ja');
+  const en = document.getElementById('lang-en');
+  if (ja && en) {
+    ja.classList.toggle('active', currentLang === 'ja');
+    en.classList.toggle('active', currentLang === 'en');
+  }
+  localStorage.setItem('ccm_lang', currentLang);
+  // Translate embedded literals too
+  translateEmbeddedStrings();
+}
+
+// Map of original embedded Japanese literals -> i18n keys
+const LITERAL_MAP = {
+  '生存者': 'label_survivors',
+  '投票': 'label_votes',
+  '投票確定・処刑': 'finalize_vote',
+  '手札: 0枚': 'hand_count_template',
+  '（現在利用可能なヒントはありません）': 'no_hints',
+  'ゴーストモード — 観戦中。すべての真実が見えます': 'ghost_mode_banner',
+  '投票の前に最後の発言をどうぞ。誰を処刑すべきか、理由とともに述べてください。': 'auto_day_prompt_last_speak',
+  '📝 捜査メモ': 'notes_label',
+  '🌀 記憶の断片': 'amnesia_label',
+  'あなたの手札': 'your_hand_label',
+};
+
+function translateEmbeddedStrings() {
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+  const nodes = [];
+  let n;
+  while (n = walker.nextNode()) {
+    nodes.push(n);
+  }
+  nodes.forEach(textNode => {
+    const txt = textNode.nodeValue && textNode.nodeValue.trim();
+    if (!txt) return;
+    if (LITERAL_MAP[txt]) {
+      const key = LITERAL_MAP[txt];
+      const replacement = t(key) || txt;
+      textNode.nodeValue = textNode.nodeValue.replace(txt, replacement);
+    }
+  });
+}
+
 // ─── localStorage persistence ────────────────────────────────
 function saveGameToStorage() {
   if (!gameId || !gameState) return;
@@ -155,22 +285,39 @@ function toggleCard(index, el) {
 $('start-btn').addEventListener('click', startGame);
 $('player-name').addEventListener('keydown', e => { if (e.key === 'Enter') startGame(); });
 
+// Language toggle handlers
+document.addEventListener('click', (e) => {
+  if (e.target && e.target.id === 'lang-ja') {
+    currentLang = 'ja'; applyI18n();
+  }
+  if (e.target && e.target.id === 'lang-en') {
+    currentLang = 'en'; applyI18n();
+  }
+});
+
 // Mode selection
 function selectMode(mode) {
   gameMode = mode;
   $('game-mode').value = mode;
-  $('mode-lite-card').classList.toggle('active', mode === 'lite');
-  $('mode-hard-card').classList.toggle('active', mode === 'hard');
+  const liteEl = $('mode-lite-card');
+  if (liteEl) liteEl.classList.toggle('active', mode === 'lite');
+  const hardEl = $('mode-hard-card');
+  if (hardEl) hardEl.classList.toggle('active', mode === 'hard');
   const npcRow = $('npc-count-row');
-  if (mode === 'hard') {
-    npcRow.classList.remove('hidden');
-  } else {
-    npcRow.classList.add('hidden');
+  // npc-count is hidden by default; only show if explicit hard element exists and is selected
+  if (npcRow) {
+    if (mode === 'hard' && hardEl) {
+      npcRow.classList.remove('hidden');
+    } else {
+      npcRow.classList.add('hidden');
+    }
   }
 }
 
 // Auto-restore from localStorage on page load
 tryRestoreGame();
+// apply initial i18n
+document.addEventListener('DOMContentLoaded', () => applyI18n());
 
 async function startGame() {
   const playerName = $('player-name').value.trim() || 'プレイヤー';
@@ -267,6 +414,8 @@ function renderAll() {
   $('debug-log-panel').classList.add('hidden');
   $('relationship-matrix-panel').classList.add('hidden');
 
+  // Re-run embedded literal translation after renders to catch programmatically-inserted text
+  translateEmbeddedStrings();
   saveGameToStorage();
 }
 
@@ -285,22 +434,22 @@ function updateHeader() {
   $('header-day').textContent = `Day ${gameState.day_number}`;
 
   const phaseEl = $('header-phase');
-  phaseEl.textContent = gameState.phase === 'day' ? '昼' : '夜';
+  phaseEl.textContent = gameState.phase === 'day' ? t('phase_day') : t('phase_night');
   phaseEl.className = 'header-phase ' + gameState.phase;
 
   const me = gameState.players.find(p => p.id === playerId);
   if (me) {
     const roleEl = $('header-role');
-    const roleMap = { fugo: '富豪', heimin: '平民', hinmin: '貧民' };
+    const roleMap = { fugo: t('role_fugo'), heimin: t('role_heimin'), hinmin: t('role_hinmin') };
     roleEl.textContent = me.role ? roleMap[me.role] || me.role : '?';
     roleEl.className = 'header-role ' + (me.role || '');
-    $('header-cards').textContent = `手札: ${me.hand_count}枚`;
+    $('header-cards').textContent = t('hand_count_template').replace('{n}', me.hand_count());
 
     // v4: game_role badge
     if (me.game_role && me.game_role !== 'none') {
       myGameRole = me.game_role;
       const gameRoleBadge = $('header-game-role');
-      const gameRoleLabels = { detective: '🔍 探偵', accomplice: '🤝 共犯者' };
+      const gameRoleLabels = { detective: t('game_role_detective'), accomplice: t('game_role_accomplice') };
       gameRoleBadge.textContent = gameRoleLabels[me.game_role] || me.game_role;
       gameRoleBadge.style.display = 'inline';
     }
@@ -339,7 +488,7 @@ function renderSmartDevice() {
 
   // PROFILE
   const profileEl = $('sd-profile-content');
-  const roleMap = { fugo: '富豪', heimin: '平民', hinmin: '貧民' };
+  const roleMap = { fugo: t('role_fugo'), heimin: t('role_heimin'), hinmin: t('role_hinmin') };
   const profileBack = me.backstory || me._debug_backstory || '（設定なし）';
   const profileHtml = `
     <div class="sd-row"><strong>現在の階級:</strong> ${escHtml(roleMap[me.role] || me.role || '不明')}</div>
@@ -390,6 +539,8 @@ function renderSmartDevice() {
       $(`sd-${target}`).classList.add('active');
     };
   });
+  // ensure i18n updates dynamic panels
+  applyI18n();
 }
 
 function updateRevolutionBanner() {
@@ -500,7 +651,7 @@ function updateIntroButton() {
 function renderPlayersList() {
   const container = $('players-list');
   container.innerHTML = '';
-  const roleMap = { fugo: '富豪', heimin: '平民', hinmin: '貧民' };
+  const roleMap = { fugo: t('role_fugo'), heimin: t('role_heimin'), hinmin: t('role_hinmin') };
   gameState.players.forEach(p => {
     const div = document.createElement('div');
     div.className = `player-card${p.is_human ? ' is-human' : ''}${p.is_hanged ? ' hanged' : ''}${p.is_out ? ' out' : ''}`;
@@ -511,7 +662,7 @@ function renderPlayersList() {
       : '<span class="player-role-badge">?</span>';
     div.innerHTML = `
       <div class="player-name">${p.name}${p.is_human ? ' ★' : ''}${roleBadge}${stateBadgeHtml(p.state)}</div>
-      <div class="player-cards-count">手札: ${p.hand_count}枚${p.is_hanged ? ' 【吊】' : ''}${p.is_out ? ' 【上がり】' : ''}</div>
+      <div class="player-cards-count">${t('hand_count_template').replace('{n}', p.hand_count)}${p.is_hanged ? ' 【吊】' : ''}${p.is_out ? ' 【上がり】' : ''}</div>
     `;
     // God eye mode overlay
     if (godEyeMode && p._debug_role && !p.is_human) {
@@ -763,7 +914,7 @@ async function collectNpcVotes() {
 
 $('finalize-vote-btn').addEventListener('click', finalizeVote);
 async function finalizeVote() {
-  if (!confirm('投票を確定して処刑を実行しますか？')) return;
+  if (!confirm(t('finalize_confirm'))) return;
   $('finalize-vote-btn').disabled = true;
 
   try {
@@ -824,11 +975,20 @@ async function finalizeVote() {
 
     // Lite mode: check for lite pending decoy (human as defender)
     if (gameState.game_mode === 'lite') {
+      // If detective (human) can investigate after meeting, show the detective panel
+      const me = gameState.players.find(p => p.id === playerId);
+      if (me && me.game_role === 'detective' && !gameState.detective_used_ability && !me.is_hanged) {
+        // Show detective investigation UI immediately after the meeting
+        const detectivePanel = $('v4-detective-panel');
+        detectivePanel.classList.remove('hidden');
+        populateDetectiveTargetSelect();
+        return; // wait for investigation before proceeding to cheat phase
+      }
+
       if (gameState.lite_pending_decoy) {
         showLiteCheatReactPanel(gameState.lite_pending_decoy.decoy_text);
       } else {
         // Check if human hinmin can cheat (lite)
-        const me = gameState.players.find(p => p.id === playerId);
         if (me && me.role === 'hinmin' && !me.cheat_used_this_night && !me.is_hanged) {
           showLiteCheatDecoyPanel();
         } else {
@@ -898,7 +1058,7 @@ function renderNightPlayersList() {
     div.className = `night-player-item${gameState.current_turn === p.id ? ' current-turn' : ''}${p.is_hanged ? ' hanged' : ''}${p.is_out ? ' out' : ''}`;
     div.innerHTML = `
       <div class="night-player-name">${p.name}${gameState.current_turn === p.id ? ' ▶' : ''}${stateBadgeHtml(p.state)}</div>
-      <div class="night-player-count">手札: ${p.hand_count}枚${p.is_hanged ? ' 【吊】' : ''}${p.is_out ? ' 上がり' : ''}</div>
+      <div class="night-player-count">${t('hand_count_template').replace('{n}', p.hand_count)}${p.is_hanged ? ' 【吊】' : ''}${p.is_out ? ' 上がり' : ''}</div>
     `;
     container.appendChild(div);
   });
@@ -1603,6 +1763,31 @@ async function autoRunDay() {
 
 async function autoRunNight() {
   if (!autoMode || autoRunning || !gameState || gameState.phase !== 'night' || gameState.game_over) return;
+  const me = (gameState.players || []).find(p => p.id === playerId) || {};
+  // If human is hanged (ghost), ask server to advance NPC turns (ghost-advance)
+  if (me.is_hanged) {
+    autoRunning = true;
+    try {
+      const res = await fetch(`${API}/api/game/ghost-advance`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ game_id: gameId }),
+      });
+      if (!res.ok) {
+        console.error('ghost-advance error', res.status, await res.text());
+        return;
+      }
+      const data = await res.json();
+      gameState = data.state;
+      if (data.npc_actions && data.npc_actions.length) addNightLogEntries(data.npc_actions);
+      autoRunning = false;
+      renderAll();
+      return;
+    } catch (e) {
+      console.error('ghost-advance error', e);
+    } finally {
+      autoRunning = false;
+    }
+  }
   // If it's an NPC's turn, the server handles it — just wait and retry
   if (gameState.current_turn !== playerId) {
     setTimeout(autoRunNight, 800);

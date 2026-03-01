@@ -1446,14 +1446,18 @@ async def lite_cheat_react(request: LiteCheatReactRequest):
 
 @app.post("/api/game/lite/detective-investigate")
 async def lite_detective_investigate(request: DetectiveInvestigateRequest):
-    """Lite mode: detective investigates one player at night start (1-time use)."""
+    """Lite mode: detective investigates one player.
+    Timing: investigations are allowed immediately after the day's meeting or at night start.
+    The endpoint accepts requests when the game is in 'day' or 'night' phases to support
+    post-meeting investigations.
+    """
     state = game_store.get(request.game_id)
     if state is None:
         raise HTTPException(status_code=404, detail="ゲームが見つかりません")
     if state.game_mode != "lite":
         raise HTTPException(status_code=400, detail="Liteモードではありません")
-    if state.phase != "night":
-        raise HTTPException(status_code=400, detail="夜フェーズでのみ利用できます")
+    if state.phase not in ("night", "day"):
+        raise HTTPException(status_code=400, detail="このタイミングでは探偵の調査はできません")
 
     detective = state.get_player(request.detective_id)
     if detective is None or detective.game_role != GameRole.DETECTIVE:
