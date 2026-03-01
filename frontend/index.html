@@ -15,31 +15,7 @@
       <div class="setup-form">
         <label for="player-name">あなたの名前</label>
         <input type="text" id="player-name" placeholder="名前を入力..." maxlength="20" value="プレイヤー" />
-        <!-- Mode Selection -->
-        <div class="mode-selector">
-          <div class="mode-card mode-lite active" id="mode-lite-card" onclick="selectMode('lite')">
-            <div class="mode-icon">⚡</div>
-            <div class="mode-name">Liteモード</div>
-            <div class="mode-desc">5人固定・軽量設定<br>陽動イカサマ・Hateシステム</div>
-          </div>
-          <div class="mode-card mode-hard" id="mode-hard-card" onclick="selectMode('hard')">
-            <div class="mode-icon">🕯️</div>
-            <div class="mode-name">Hardモード</div>
-            <div class="mode-desc">複雑な世界設定・事件<br>記憶喪失・因縁ドラマ</div>
-          </div>
-        </div>
         <input type="hidden" id="game-mode" value="lite" />
-
-        <!-- Hard mode only: NPC count -->
-        <div id="npc-count-row" class="hidden">
-          <label for="npc-count">NPC人数</label>
-          <select id="npc-count">
-            <option value="3">3人</option>
-            <option value="4" selected>4人</option>
-            <option value="5">5人</option>
-            <option value="6">6人</option>
-          </select>
-        </div>
         <button id="start-btn" class="btn-primary">ゲーム開始</button>
         <p id="setup-error" class="error-msg hidden"></p>
       </div>
