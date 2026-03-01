@@ -10,15 +10,15 @@ import os
 import random
 import time
 import uuid
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Literal, Optional, Tuple
 
 from mistralai import Mistral
 
 from models import (
-    Card, Character, CheatEffect, CheatEffectType, GameState, PendingCheat,
-    Role, TrueWinCondition, VictoryCondition, Relationship
+    Card, Character, CheatEffect, CheatEffectType, GameRole, GameState,
+    NPCPersonality, PendingCheat, Role, TrueWinCondition, VictoryCondition, Relationship
 )
-from game_engine import apply_cheat_effect, apply_pass, apply_play, get_valid_plays
+from game_engine import apply_cheat_effect, apply_pass, apply_play, get_valid_plays, log_role_co_fact
 
 
 def get_client() -> Mistral:
@@ -1459,23 +1459,113 @@ JSON形式で返してください:
     return characters
 
 
+def _build_npc_action_guidance(
+    npc: "Character",
+    state: "GameState",
+    player_message: str,
+    ls: "LogicState",
+) -> str:
+    """
+    Build role-specific strategic action guidance for the NPC's current turn.
+    Tells the AI exactly what to consider doing (CO, fake CO, cast suspicion, etc.).
+    """
+    asking_detective = any(
+        kw in player_message
+        for kw in ["探偵", "名乗り出", "名乗って", "誰が探偵", "探偵CO", "CO"]
+    )
+    day = state.day_number
+    already_coed_det = npc.id in ls.detective_co_list
+    others_coed_det = [pid for pid in ls.detective_co_list if pid != npc.id]
+
+    lines: List[str] = []
+
+    if npc.role == Role.HEIMIN and npc.game_role == GameRole.DETECTIVE:
+        lines.append("【あなたの秘密の役割】本物の探偵 (DETECTIVE)")
+        if asking_detective and not already_coed_det:
+            lines.append("→ 今がCOのタイミングです。「私が探偵です」と積極的に名乗り出てください。")
+            if others_coed_det:
+                names = " / ".join(
+                    state.get_player(p).name for p in others_coed_det if state.get_player(p)
+                )
+                lines.append(f"  ・{names} がすでに探偵COしています。「私こそ本物の探偵です」と対抗COしてください。")
+            lines.append("  ・co_claim を 'detective' に設定してください。")
+        elif day >= 2 and not already_coed_det:
+            lines.append("→ 2日目以降です。状況が不安定なら今COして議論を主導するのも有効です。")
+            lines.append("  ・COする場合は co_claim を 'detective' に設定してください。")
+        else:
+            lines.append("→ まだCOしなくてよい。証拠を分析し、論理的な疑惑を自然に提示してください。")
+        if state.detective_result:
+            dr = state.detective_result
+            t = state.get_player(dr.get("target_id", ""))
+            if t:
+                val = dr.get("value", "不明")
+                lines.append(
+                    f"・あなたの調査結果（秘密）: {t.name} → {val}。"
+                    "この情報を根拠に発言してよい（詳細は慎重に、誘導的に）。"
+                )
+
+    elif npc.role == Role.FUGO:
+        lines.append("【あなたの秘密の役割】富豪 (FUGO) — 平民のふりをしながら貧民を吊るよう誘導せよ")
+        if asking_detective:
+            lines.append("→ 探偵COの呼びかけがあります。以下の戦術を状況に応じて選べ：")
+            lines.append(
+                "  A) 【偽探偵CO作戦・積極的に検討】「実は私が探偵です」と名乗り出る。"
+                "でっち上げた調査結果（『○○さんが怪しいと分かった』等）を述べ貧民への疑惑を煽る。"
+                "本物の探偵との対抗COを誘発し、会議を混乱させろ。その場合 co_claim: 'detective' を設定。"
+            )
+            lines.append("  B) COしない。平民を演じ続け、別の視点で貧民への疑惑を誘導する。")
+        else:
+            lines.append("→ 平民を演じながら巧みに貧民への疑惑を植え付けてください。")
+            lines.append("  ・弱そうな人物や言動が矛盾する人物を「少し怪しいかも」と匂わせよ。")
+            lines.append("  ・自分が疑われそうなら、すぐ別の人物の不審点に話題を切り替えよ。")
+
+    elif npc.role == Role.HINMIN:
+        lines.append("【あなたの秘密の役割】貧民 (HINMIN) — 平民のふりをしながら富豪を吊るよう誘導せよ")
+        if asking_detective:
+            lines.append("→ 探偵COの呼びかけがあります。以下の戦術を状況に応じて選べ：")
+            lines.append(
+                "  A) 【偽探偵CO作戦・検討せよ】「探偵として調べた結果…」と宣言する。"
+                "でっち上げた調査結果で富豪への疑惑を煽れ。"
+                "会議の流れを自分に有利にできるなら積極的にCOせよ。その場合 co_claim: 'detective' を設定。"
+            )
+            lines.append("  B) COしない。平民を演じ、強いカードを持つ富豪らしい人物に自然に疑惑を向ける。")
+        else:
+            lines.append("→ 平民を演じながら富豪への疑惑を巧みに煽ってください。")
+            lines.append("  ・強いカードを出した人物＝富豪の可能性が高い。「あの人強いカード多くなかった？」と匂わせよ。")
+            lines.append("  ・自分が疑われそうなら「私は弱いカードしか持ってなかった」と言い訳し、すぐ別の人物に話題を向けよ。")
+
+    else:
+        # Regular HEIMIN (no special role) or ACCOMPLICE
+        lines.append("【あなたの役割】平民（特殊能力なし）— 富豪と貧民を見つけることが目標")
+        if asking_detective:
+            lines.append("→ 探偵COを積極的に促してください。「探偵の人は名乗り出てほしい」と発言してよい。")
+        if ls.action_contradictions:
+            for c in ls.action_contradictions:
+                if c["actor_id"] != npc.id:
+                    lines.append(f"→ {c['actor_name']} の発言・行動に矛盾があります。指摘してよい。")
+        if "roller_detective" in ls.active_tactics:
+            lines.append("→ 対抗CO中：どちらの探偵COが本物か、論理的に追及してよい。")
+
+    return "\n".join(lines)
+
+
 async def generate_lite_npc_speeches(
     state: "GameState",
     player_message: str,
 ) -> List[Dict[str, Any]]:
     """
-    Lite mode: generate NPC responses with role-based foreshadowing.
-    Each NPC subtly hints at their hidden identity through speech.
-    Returns list of {"npc_id", "name", "text", "foreshadowing", "reasoning"}.
+    Lite mode: generate NPC responses with proactive role-based strategy.
+    NPCs actively decide whether to CO, fake-CO, or cast suspicion based on game state.
+    Returns list of {"npc_id", "name", "text", "foreshadowing", "reasoning", "co_claim"}.
     """
     npcs = [p for p in state.alive_players() if not p.is_human and not p.is_hanged]
 
-    # Build card play evidence log (what each player has played)
+    # Build card play evidence log
     card_evidence = []
     for p in state.players:
         if p.cards_played_history:
             all_played = [c for hand in p.cards_played_history for c in hand]
-            strong_cards = [c for c in all_played if c.strength >= 14 or c.is_joker]  # 2 or Joker
+            strong_cards = [c for c in all_played if c.strength >= 14 or c.is_joker]
             if strong_cards:
                 card_evidence.append(f"{p.name}: 強いカード（{', '.join(c.display() for c in strong_cards)}）を出した")
     card_evidence_str = "\n".join(card_evidence) if card_evidence else "まだカード証拠なし"
@@ -1492,65 +1582,78 @@ async def generate_lite_npc_speeches(
     client = get_client()
 
     async def _gen(npc: Character) -> Dict[str, Any]:
-        role_strategy = {
-            Role.FUGO: "あなたは富豪です。平民のフリをしながら、貧民への疑惑を自然に煽ってください。カードを強く出しすぎた事実を別の話題でごまかしてもよい。",
-            Role.HINMIN: "あなたは貧民です。平民のフリをしながら、富豪への疑惑を自然に煽ってください。強いカードを出している人物が危険だと匂わせてもよい。",
-            Role.HEIMIN: "あなたは平民です。カードゲームの証拠と会議の発言を元に、富豪か貧民を探し出してください。",
-        }
-        strategy = role_strategy.get(npc.role, "")
+        ls = state.logic_state
 
-        # Foreshadowing guide by role
-        foreshadowing_guide = {
-            Role.FUGO: (
-                "自分が強いカードを持っている・出したことを遠回しに正当化する言葉を1つ含める。"
-                "例: 「たまたまいいカードが来ちゃいましたね」「強いカードも出し時を考えないとですよね」"
-            ),
-            Role.HINMIN: (
-                "強いカードを出した人物への疑惑を自然に植え付ける言葉を1つ含める。"
-                "例: 「あんなカードを持ってるってちょっと怪しくないですか？」「誰かが裏でズルをしてる気がします」"
-            ),
-            Role.HEIMIN: (
-                "カードゲームの事実に基づいた中立的な観察を述べる。"
-                "例: 「Aさん、強いカード多かったですね」「誰かイカサマしてないかな…」"
-            ),
-        }
-        foreshadow = foreshadowing_guide.get(npc.role, "")
+        # Build strategic action guidance (highest priority instruction)
+        action_guidance = _build_npc_action_guidance(npc, state, player_message, ls)
 
-        recent_chat = state.chat_history[-5:] if len(state.chat_history) > 5 else state.chat_history
-        chat_summary = "\n".join([f"{m.speaker_name}: {m.text}" for m in recent_chat])
+        # Personality-based logic reaction
+        LOGIC_REACTION = {
+            "論理派": "論理状態を積極的に全体へ提案し、セオリー通りに投票を促せ。",
+            "慎重派": "論理状態を参考に、断定せず可能性として穏やかに提示せよ。",
+            "扇動者": "論理状態を利用して特定人物を強く糾弾し、感情的に攻め立てよ。",
+            "便乗派": "他者がロジックに言及したら同意せよ。自発的には提案しない。",
+            "狂信者": "論理状態を無視するか、全く関係ない人物を吊るよう主張せよ。",
+        }
+        logic_ctx = ""
+        if ls.active_tactics:
+            reaction_guide = LOGIC_REACTION.get(npc.argument_style, "論理状態を参考にしてよい。")
+            tactic_lines = []
+            if "roller_detective" in ls.active_tactics:
+                names = " と ".join(
+                    state.get_player(pid).name for pid in ls.detective_co_list
+                    if state.get_player(pid)
+                )
+                tactic_lines.append(f"  ・探偵ローラー: {names} が両方探偵をCO中。どちらかが偽物。")
+            if "confirmed_white" in ls.active_tactics:
+                cw = [state.get_player(pid).name for pid in ls.confirmed_whites if state.get_player(pid)]
+                tactic_lines.append(f"  ・確定白: {', '.join(cw)} — 対抗なし探偵CO＝信頼可能。")
+            if "action_contradiction" in ls.active_tactics:
+                for c in ls.action_contradictions:
+                    tactic_lines.append(f"  ・矛盾: {c['actor_name']} は平民COだが {c['card_display']} を出した。")
+            if tactic_lines:
+                logic_ctx = (
+                    "\n【現在の論理状態】\n"
+                    + "\n".join(tactic_lines)
+                    + f"\nあなたの性格「{npc.argument_style}」としての対応: {reaction_guide}\n"
+                )
+
+        recent_chat = state.chat_history[-6:] if len(state.chat_history) > 6 else state.chat_history
+        chat_summary = "\n".join(f"{m.speaker_name}: {m.text}" for m in recent_chat)
 
         prompt = f"""大富豪×人狼ゲームのNPCとして発言してください。
 
-キャラクター: {npc.name}
-職業・性格: {npc.personality}
+キャラクター: {npc.name}（{npc.personality}）
 口調: {npc.speech_style}
 議論スタイル: {npc.argument_style}
+現在: {state.day_number}日目の昼会議
 
-【秘密の役割と戦略】
-{strategy}
-
-【伏線ガイド（必ず1つ自然に含めること）】
-{foreshadow}
-
-カードゲームの証拠（昨夜の大富豪結果）:
+【今ターンの行動指針（最優先）】
+{action_guidance}
+{logic_ctx}
+カードゲーム証拠（昨夜の結果）:
 {card_evidence_str}
 
 イカサマ露見記録:
 {cheat_str}
 
-最近の会話:
+直近の会話:
 {chat_summary}
 
 プレイヤーの発言: 「{player_message}」
 
-上記を踏まえて{npc.name}として発言してください（1〜2文）。
-伏線を自然に含めること。役割は絶対に明かさないこと。
+上記の行動指針に従い、{npc.name}として自然に1〜2文で発言してください。
+- 秘密の役職は絶対に直接明かさない（嘘をついてもよい）
+- COする場合のみ co_claim を設定。COしない場合は null。
+- action_intent でこのターンの行動意図を簡潔に記録してください。
 
-JSON形式:
+JSON形式で返してください:
 {{
-  "reasoning": "内部戦略メモ（表示されない）",
-  "speech": "発言内容（キャラクター口調）",
-  "foreshadowing": "この発言に含まれた伏線の説明（1文、ゲームマスター向け）"
+  "reasoning": "内部戦略メモ（非公開）",
+  "action_intent": "co_detective / fake_co_detective / cast_suspicion / challenge / observe など",
+  "speech": "発言内容（キャラクターの口調で）",
+  "foreshadowing": "この発言が含む伏線の説明（GM向け1文）",
+  "co_claim": null
 }}"""
 
         t0 = time.time()
@@ -1558,21 +1661,29 @@ JSON形式:
             model="mistral-small-latest",
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
-            temperature=0.85,
+            temperature=0.88,
         )
         latency = int((time.time() - t0) * 1000)
 
         try:
             d = json.loads(response.choices[0].message.content)
+            co = d.get("co_claim")
+            valid_co = co if co in ("detective", "heimin", "fugo", "hinmin") else None
+            if valid_co:
+                log_role_co_fact(state, npc.id, npc.name, valid_co)
             return {
                 "npc_id": npc.id,
                 "name": npc.name,
                 "text": d.get("speech", "…"),
                 "foreshadowing": d.get("foreshadowing", ""),
-                "reasoning": d.get("reasoning", ""),
+                "reasoning": d.get("reasoning", "") + " | " + d.get("action_intent", ""),
+                "co_claim": valid_co,
             }
         except Exception:
-            return {"npc_id": npc.id, "name": npc.name, "text": "…", "foreshadowing": "", "reasoning": ""}
+            return {
+                "npc_id": npc.id, "name": npc.name, "text": "…",
+                "foreshadowing": "", "reasoning": "", "co_claim": None,
+            }
 
     responses = await asyncio.gather(*[_gen(npc) for npc in npcs])
     return list(responses)
@@ -1776,3 +1887,509 @@ JSON:
             story="陽動が見事に決まり、仕掛け人はターゲットのカードを素早く奪い取った。",
             judgment="big_success",
         )
+
+
+# ═══════════════════════════════════════════════════════
+#   v4 FUNCTIONS
+#   役職・Trust/Affinity・個人目標システム
+# ═══════════════════════════════════════════════════════
+
+async def generate_v4_characters(
+    npc_count: int,
+    player_name: str = "プレイヤー",
+) -> List[Character]:
+    """
+    v4 Lite mode: generate lightweight NPC characters with npc_personality.
+    game_role is assigned separately by assign_classes_and_roles_v4 in main.py.
+    """
+    client = get_client()
+
+    # Build role assignments for display (AI doesn't need to know game_role)
+    roles: List[Role] = [Role.FUGO, Role.HINMIN]
+    while len(roles) < npc_count:
+        roles.append(Role.HEIMIN)
+    random.shuffle(roles)
+    role_assignments = ", ".join([f"npc_{i+1:02d}: {r.value}" for i, r in enumerate(roles)])
+
+    personality_options = "logical（証拠ベースで糾弾）/ emotional（感情で攻撃/庇う）/ cowardly（多数派追従）/ destroyer（反抗者を優先攻撃）"
+
+    prompt = f"""大富豪×人狼ゲームのNPCキャラクターを{npc_count}人生成してください。
+
+ゲーム構図: 【平民3名 vs 富豪1名 vs 貧民1名】の5人ゲーム。
+
+各キャラクターを簡潔に生成してください:
+- id: "npc_01" 〜 "npc_{npc_count:02d}"
+- name: 日本語の名前（姓名）
+- occupation: 職業（例: 会社員、学生、料理人）
+- personality: 性格（1文）
+- speech_style: 話し方の特徴（〜だぜ、〜ですわ など）
+- argument_style: "慎重派"/"扇動者"/"論理派"/"便乗派"/"狂信者" のいずれか
+- npc_personality: "{personality_options}" のいずれか（英単語で返すこと）
+- acquaintance_id: 「顔見知り」のNPC ID（1つだけ、自分以外）
+- acquaintance_desc: 顔見知りの関係説明（1文）
+
+ロール割り当て（この通りに設定すること）: {role_assignments}
+
+JSON形式で返してください:
+{{
+  "characters": [
+    {{
+      "id": "npc_01",
+      "name": "山田太郎",
+      "occupation": "会社員",
+      "personality": "口数は少ないが観察力が鋭い",
+      "speech_style": "…そうですね",
+      "argument_style": "慎重派",
+      "npc_personality": "logical",
+      "acquaintance_id": "npc_02",
+      "acquaintance_desc": "同じ職場の同僚",
+      "role": "heimin"
+    }}
+  ]
+}}"""
+
+    t0 = time.time()
+    response = client.chat.complete(
+        model="mistral-small-latest",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.9,
+    )
+    latency = int((time.time() - t0) * 1000)
+
+    content = response.choices[0].message.content
+    data = json.loads(content)
+    characters_data = data.get("characters", [])
+
+    characters = []
+    for i, char_data in enumerate(characters_data):
+        role_val = char_data.get("role", "heimin")
+        try:
+            role = Role(role_val)
+        except ValueError:
+            role = roles[i] if i < len(roles) else Role.HEIMIN
+
+        # Parse npc_personality
+        personality_val = char_data.get("npc_personality", "logical")
+        try:
+            npc_personality = NPCPersonality(personality_val)
+        except ValueError:
+            npc_personality = random.choice(list(NPCPersonality))
+
+        occupation = char_data.get("occupation", "会社員")
+        personality_text = char_data.get("personality", "普通の人物")
+        backstory = f"{occupation}。{personality_text}"
+
+        acquaintance_id = char_data.get("acquaintance_id", "")
+        acquaintance_desc = char_data.get("acquaintance_desc", "顔見知り")
+        relationships = []
+        if acquaintance_id:
+            relationships.append(Relationship(
+                target_id=acquaintance_id,
+                description=acquaintance_desc,
+            ))
+
+        valid_styles = {"慎重派", "扇動者", "論理派", "便乗派", "狂信者"}
+        arg_style = char_data.get("argument_style", "")
+        if arg_style not in valid_styles:
+            arg_style = random.choice(list(valid_styles))
+
+        # Lite mode: simple victory conditions based on role
+        if role == Role.FUGO:
+            vc = VictoryCondition(
+                type="first_out",
+                description="大富豪パートで手札を2枚以下に減らす（誰かが上がる前に）",
+            )
+        elif role == Role.HINMIN:
+            vc = VictoryCondition(
+                type="revolution",
+                description="富豪より先に上がる、または2・ジョーカーを場に出す",
+            )
+        else:
+            vc = VictoryCondition(
+                type="first_out",
+                description="富豪と貧民を両方排除して生き残る",
+            )
+
+        character = Character(
+            id=char_data.get("id", f"npc_{i+1:02d}"),
+            name=char_data.get("name", f"NPC{i+1}"),
+            role=role,
+            backstory=backstory,
+            personality=personality_text,
+            speech_style=char_data.get("speech_style", ""),
+            relationships=relationships,
+            victory_condition=vc,
+            argument_style=arg_style,
+            npc_personality=npc_personality,
+            is_human=False,
+        )
+        characters.append(character)
+
+    return characters
+
+
+def generate_detective_result(detective: Character, target: Character, info_type: str) -> dict:
+    """Pure function: return detective investigation result without AI.
+    info_type: "class" → target's role; "strongest_card" → target's strongest card display.
+    """
+    if info_type == "class":
+        role_jp = {"fugo": "富豪", "hinmin": "貧民", "heimin": "平民"}
+        value = role_jp.get(target.role.value, target.role.value)
+        label = "階級"
+    else:  # strongest_card
+        if target.hand:
+            from game_engine import card_strength
+            strongest = max(target.hand, key=lambda c: (card_strength(c), c.suit_strength))
+            value = strongest.display()
+        else:
+            value = "（手札なし）"
+        label = "最強カード"
+    return {
+        "target_id": target.id,
+        "target_name": target.name,
+        "info_type": info_type,
+        "label": label,
+        "value": value,
+    }
+
+
+async def generate_npc_speech_v4(
+    state: "GameState",
+    player_message: str,
+) -> List[Dict[str, Any]]:
+    """
+    v4: NPC speeches with Trust/Affinity context + personality-based style.
+    Extends generate_lite_npc_speeches.
+    """
+    npcs = [p for p in state.alive_players() if not p.is_human and not p.is_hanged]
+
+    # Build shared evidence context (same as generate_lite_npc_speeches)
+    card_evidence = []
+    for p in state.players:
+        if p.cards_played_history:
+            all_played = [c for hand in p.cards_played_history for c in hand]
+            strong_cards = [c for c in all_played if c.strength >= 14 or c.is_joker]
+            if strong_cards:
+                card_evidence.append(f"{p.name}: 強いカード（{', '.join(c.display() for c in strong_cards)}）を出した")
+    card_evidence_str = "\n".join(card_evidence) if card_evidence else "まだカード証拠なし"
+
+    cheat_traces = []
+    for entry in state.cheat_log:
+        if entry.judgment == "big_fail":
+            p = state.get_player(entry.cheater_id)
+            if p:
+                cheat_traces.append(f"{p.name}: イカサマが露見した")
+    cheat_str = "\n".join(cheat_traces) if cheat_traces else "なし"
+
+    client = get_client()
+
+    async def _gen(npc: Character) -> Dict[str, Any]:
+        role_strategy = {
+            Role.FUGO: "あなたは富豪です。平民のフリをしながら、貧民への疑惑を自然に煽ってください。",
+            Role.HINMIN: "あなたは貧民です。平民のフリをしながら、富豪への疑惑を自然に煽ってください。",
+            Role.HEIMIN: "あなたは平民です。カードゲームの証拠と会議の発言を元に、富豪か貧民を探してください。",
+        }
+        strategy = role_strategy.get(npc.role, "")
+
+        # Personality-based speech style
+        personality = npc.npc_personality or NPCPersonality.LOGICAL
+        personality_guide = {
+            NPCPersonality.LOGICAL:   "Trust（信頼）が低い相手を証拠ベースで冷静に糾弾する発言スタイル",
+            NPCPersonality.EMOTIONAL: "Affinity（好感度）が高い相手を庇い、低い相手を感情的に攻撃するスタイル",
+            NPCPersonality.COWARDLY:  "多数の意見に同調し、自分からは主張せず流れに乗るスタイル",
+            NPCPersonality.DESTROYER: "自分に反抗した（好感度が最も低い）相手を最優先で叩くスタイル",
+        }
+        personality_hint = personality_guide.get(personality, "")
+
+        # Build trust/affinity context for this NPC
+        trust_row = state.trust_matrix.get(npc.id, {})
+        affinity_row = state.affinity_matrix.get(npc.id, {})
+        player_id_name = {p.id: p.name for p in state.players}
+
+        trust_summary_parts = sorted(trust_row.items(), key=lambda x: x[1])
+        trust_summary = ", ".join(
+            f"{player_id_name.get(pid, pid)}:{val}"
+            for pid, val in trust_summary_parts[:4]
+        )
+        affinity_summary_parts = sorted(affinity_row.items(), key=lambda x: x[1])
+        affinity_summary = ", ".join(
+            f"{player_id_name.get(pid, pid)}:{val}"
+            for pid, val in affinity_summary_parts[:4]
+        )
+
+        foreshadowing_guide = {
+            Role.FUGO: "自分が強いカードを出した事実を遠回しに正当化する言葉を1つ含める。",
+            Role.HINMIN: "強いカードを出した人物への疑惑を植え付ける言葉を1つ含める。",
+            Role.HEIMIN: "カードゲームの事実に基づいた中立的な観察を述べる。",
+        }
+        foreshadow = foreshadowing_guide.get(npc.role, "")
+
+        recent_chat = state.chat_history[-5:] if len(state.chat_history) > 5 else state.chat_history
+        chat_summary = "\n".join([f"{m.speaker_name}: {m.text}" for m in recent_chat])
+
+        prompt = f"""大富豪×人狼ゲームのNPCとして発言してください。
+
+キャラクター: {npc.name}
+職業・性格: {npc.personality}
+口調: {npc.speech_style}
+議論スタイル: {npc.argument_style}
+行動パターン（personality）: {personality.value} — {personality_hint}
+
+【秘密の役割と戦略】
+{strategy}
+
+【信頼スコア (低→高)】: {trust_summary or "データなし"}
+【好感度スコア (低→高)】: {affinity_summary or "データなし"}
+
+【伏線ガイド（必ず1つ自然に含めること）】
+{foreshadow}
+
+カードゲームの証拠:
+{card_evidence_str}
+
+イカサマ露見記録:
+{cheat_str}
+
+最近の会話:
+{chat_summary}
+
+プレイヤーの発言: 「{player_message}」
+
+上記を踏まえて{npc.name}として発言してください（1〜2文）。
+行動パターンに沿った発言スタイルにすること。役割は絶対に明かさないこと。
+
+JSON形式:
+{{
+  "reasoning": "内部戦略メモ（表示されない）",
+  "speech": "発言内容（キャラクター口調）",
+  "foreshadowing": "この発言に含まれた伏線の説明（ゲームマスター向け）"
+}}"""
+
+        t0 = time.time()
+        response = client.chat.complete(
+            model="mistral-small-latest",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.85,
+        )
+        latency = int((time.time() - t0) * 1000)
+
+        try:
+            d = json.loads(response.choices[0].message.content)
+            return {
+                "npc_id": npc.id,
+                "name": npc.name,
+                "text": d.get("speech", "…"),
+                "foreshadowing": d.get("foreshadowing", ""),
+                "reasoning": d.get("reasoning", ""),
+            }
+        except Exception:
+            return {"npc_id": npc.id, "name": npc.name, "text": "…", "foreshadowing": "", "reasoning": ""}
+
+    responses = await asyncio.gather(*[_gen(npc) for npc in npcs])
+    return list(responses)
+
+
+async def decide_npc_vote_v4(
+    npc: Character,
+    state: "GameState",
+) -> Tuple[Optional[str], str]:
+    """
+    v4: NPC vote with personality-based bias + trust/affinity awareness.
+    LOGICAL → trust最低の相手. EMOTIONAL → affinity最低. COWARDLY → 現在最多票. DESTROYER → affinity<30.
+    """
+    if npc.is_hanged:
+        return None, ""
+
+    candidates = [p for p in state.alive_players() if p.id != npc.id]
+    if not candidates:
+        return None, ""
+
+    candidate_ids = [p.id for p in candidates]
+    personality = npc.npc_personality or NPCPersonality.LOGICAL
+
+    # Deterministic bias: compute preferred target before asking AI
+    preferred_id = None
+    if personality == NPCPersonality.LOGICAL:
+        from game_engine import get_most_suspected_player
+        preferred_id = get_most_suspected_player(state, npc.id, candidate_ids)
+    elif personality == NPCPersonality.EMOTIONAL:
+        # Lowest affinity
+        row = state.affinity_matrix.get(npc.id, {})
+        scored = {cid: row.get(cid, 50) for cid in candidate_ids}
+        preferred_id = min(scored, key=scored.get) if scored else None
+    elif personality == NPCPersonality.COWARDLY:
+        # Follow current majority vote
+        vote_counts = {}
+        for tid in state.votes.values():
+            vote_counts[tid] = vote_counts.get(tid, 0) + 1
+        valid_counts = {cid: vote_counts.get(cid, 0) for cid in candidate_ids}
+        if any(v > 0 for v in valid_counts.values()):
+            preferred_id = max(valid_counts, key=valid_counts.get)
+    elif personality == NPCPersonality.DESTROYER:
+        # Target who has lowest affinity (< 30 preferred)
+        row = state.affinity_matrix.get(npc.id, {})
+        hostile = {cid: row.get(cid, 50) for cid in candidate_ids if row.get(cid, 50) < 30}
+        if hostile:
+            preferred_id = min(hostile, key=hostile.get)
+
+    # Build evidence context
+    card_evidence = []
+    for p in candidates:
+        if p.cards_played_history:
+            all_played = [c for hand in p.cards_played_history for c in hand]
+            strong = [c for c in all_played if c.strength >= 14 or c.is_joker]
+            card_evidence.append({
+                "id": p.id,
+                "name": p.name,
+                "strong_cards_played": [c.display() for c in strong],
+                "hand_count": p.hand_count(),
+            })
+        else:
+            card_evidence.append({"id": p.id, "name": p.name, "strong_cards_played": [], "hand_count": p.hand_count()})
+
+    cheat_exposed = [
+        state.get_player(e.cheater_id).name
+        for e in state.cheat_log
+        if e.judgment == "big_fail" and state.get_player(e.cheater_id)
+    ]
+
+    recent_chat = state.chat_history[-8:] if len(state.chat_history) > 8 else state.chat_history
+    chat_summary = "\n".join([f"{m.speaker_name}: {m.text}" for m in recent_chat])
+
+    role_vote_bias = {
+        Role.FUGO: "あなたは富豪です。貧民への疑惑が高まるように投票してください。",
+        Role.HINMIN: "あなたは貧民です。富豪（強いカードを多く出している人物）への疑惑が高まるように投票してください。",
+        Role.HEIMIN: "あなたは平民です。カードゲームで強すぎた人物（富豪候補）またはイカサマの痕跡がある人物（貧民候補）に投票してください。",
+    }
+    bias = role_vote_bias.get(npc.role, "")
+
+    personality_bias_note = ""
+    if preferred_id:
+        preferred_name = state.get_player(preferred_id)
+        preferred_name_str = preferred_name.name if preferred_name else preferred_id
+        personality_bias_note = f"\n【行動パターン（{personality.value}）による優先ターゲット】: {preferred_name_str}（このキャラの行動パターンに基づく）"
+
+    prompt = f"""大富豪×人狼の投票フェーズです。
+
+キャラクター: {npc.name}（{npc.personality}）
+【役割と投票戦略】: {bias}
+{personality_bias_note}
+
+カードゲームの証拠:
+{json.dumps(card_evidence, ensure_ascii=False, indent=2)}
+
+イカサマ露見者: {cheat_exposed if cheat_exposed else "なし"}
+
+会議での発言:
+{chat_summary}
+
+上記から最も怪しい人物を1人選び投票してください。
+reasoning: 投票理由を具体的に（30〜60文字）
+JSON: {{"reasoning": "...", "target_id": "npc_xx or player_human"}}"""
+
+    client = get_client()
+    t0 = time.time()
+    response = client.chat.complete(
+        model="mistral-small-latest",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.8,
+    )
+    latency = int((time.time() - t0) * 1000)
+
+    try:
+        d = json.loads(response.choices[0].message.content)
+        target_id = d.get("target_id")
+        reasoning = d.get("reasoning", "")
+        valid_ids = [p.id for p in candidates]
+        # If AI chose invalid target, fall back to personality-preferred or random
+        if target_id not in valid_ids:
+            target_id = preferred_id if preferred_id in valid_ids else random.choice(valid_ids)
+        _log_api_call(state, "v4_vote", "mistral-small", f"{npc.name} v4 vote", target_id, latency)
+        return target_id, reasoning
+    except Exception:
+        fallback = preferred_id if preferred_id in [p.id for p in candidates] else random.choice([p.id for p in candidates])
+        return fallback, ""
+
+
+async def decide_npc_card_play_v4(
+    npc: Character,
+    state: GameState,
+) -> Tuple[Optional[List[Card]], str, str]:
+    """
+    v4: NPC card play with affinity-based cooperation/interference.
+    - Affinity ≥ 70 with next player → consider passing (assist)
+    - Affinity ≤ 30 with last player → use strong card to block
+    Falls back to decide_npc_play if no affinity data.
+    """
+    if npc.is_hanged:
+        return None, "", ""
+
+    valid_plays = get_valid_plays(npc.hand, state.table, state.revolution_active)
+    if not valid_plays:
+        return None, "", ""
+
+    # Determine next player in turn order (for assist decision)
+    affinity_row = state.affinity_matrix.get(npc.id, {})
+    last_played_by = state.last_played_by
+
+    # Affinity-based assist: if current table was played by high-affinity player, prefer pass
+    if last_played_by and affinity_row.get(last_played_by, 50) >= 70:
+        return None, "", "高好感度の相手をアシスト（パス）"
+
+    # Affinity-based interference: if last player has low affinity, play strong card
+    if last_played_by and affinity_row.get(last_played_by, 50) <= 30 and valid_plays:
+        # Sort by strength (desc) and pick strongest
+        def play_max_strength(p):
+            return max((c.strength * 10 + c.suit_strength) for c in p)
+        valid_plays_sorted = sorted(valid_plays, key=play_max_strength, reverse=True)
+        best = valid_plays_sorted[0]
+        return best, "邪魔してやる", "低好感度の相手への妨害プレイ"
+
+    # Delegate to standard decide_npc_play for other cases
+    return await decide_npc_play(npc, state)
+
+
+# ─────────────────────────────────────────────
+# v4: Detective ability (no AI call — pure state read)
+# ─────────────────────────────────────────────
+
+def generate_detective_result(
+    state: GameState,
+    target_id: str,
+    info_type: Literal["class", "strongest_card"],
+) -> dict:
+    """Return detective investigation result without AI call."""
+    target = state.get_player(target_id)
+    if target is None:
+        return {"error": "対象が見つかりません"}
+
+    if info_type == "class":
+        value = target.role.value  # "fugo" / "heimin" / "hinmin"
+        label = {"fugo": "富豪", "heimin": "平民", "hinmin": "貧民"}.get(value, value)
+        return {
+            "target_id": target_id,
+            "target_name": target.name,
+            "info_type": "class",
+            "value": value,
+            "display": f"{target.name}の階級は【{label}】です",
+        }
+    else:  # strongest_card
+        if not target.hand:
+            return {
+                "target_id": target_id,
+                "target_name": target.name,
+                "info_type": "strongest_card",
+                "value": None,
+                "display": f"{target.name}の手札は空です",
+            }
+        strongest = max(target.hand, key=lambda c: c.strength)
+        return {
+            "target_id": target_id,
+            "target_name": target.name,
+            "info_type": "strongest_card",
+            "value": strongest.to_dict(),
+            "display": f"{target.name}の最強カードは【{strongest.display()}】です",
+        }

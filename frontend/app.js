@@ -16,6 +16,12 @@ let hintsVisible = false;
 let ghostAdvanceTimer = null;
 let introUsed = false;
 let liteReactTimer = null;  // countdown timer for lite cheat react
+// v4: Detective
+let myGameRole = null;    // "detective", "none", etc.
+let detectiveUsed = false; // whether ability has been used
+// Auto mode
+let autoMode = false;
+let autoRunning = false;  // prevent concurrent auto runs
 
 // ─── localStorage persistence ────────────────────────────────
 function saveGameToStorage() {
@@ -195,6 +201,17 @@ async function startGame() {
     playerId = data.player_id;
     gameState = data.state;
 
+    // Reset all per-game state
+    nightLog = [];
+    selectedCards.clear();
+    myVoteTarget = null;
+    lastBatonMap = {};
+    introUsed = false;
+    autoMode = false;
+    autoRunning = false;
+    $('auto-mode-btn').classList.remove('active');
+    $('auto-mode-btn').textContent = '⚡ AUTO';
+
     showScreen('game');
     renderAll();
     saveGameToStorage();
@@ -231,6 +248,7 @@ function renderAll() {
     $('night-situation-banner').classList.add('hidden');
     showPhase('day');
     renderDayPhase();
+    if (autoMode) scheduleAutoDay();
   } else {
     showPhase('night');
     renderNightPhase();
@@ -238,10 +256,13 @@ function renderAll() {
     if (gameState.is_ghost_mode) {
       startGhostAutoAdvance();
     }
+    if (autoMode) scheduleAutoNight();
   }
 
   // Debug side panel (god eye mode)
   renderDebugSidePanel();
+  // Smart Device (player status) panel
+  renderSmartDevice();
   // Keep legacy floating panels hidden
   $('debug-log-panel').classList.add('hidden');
   $('relationship-matrix-panel').classList.add('hidden');
@@ -274,7 +295,101 @@ function updateHeader() {
     roleEl.textContent = me.role ? roleMap[me.role] || me.role : '?';
     roleEl.className = 'header-role ' + (me.role || '');
     $('header-cards').textContent = `手札: ${me.hand_count}枚`;
+
+    // v4: game_role badge
+    if (me.game_role && me.game_role !== 'none') {
+      myGameRole = me.game_role;
+      const gameRoleBadge = $('header-game-role');
+      const gameRoleLabels = { detective: '🔍 探偵', accomplice: '🤝 共犯者' };
+      gameRoleBadge.textContent = gameRoleLabels[me.game_role] || me.game_role;
+      gameRoleBadge.style.display = 'inline';
+    }
   }
+
+  // Sync detective_used_ability from state
+  if (gameState.detective_used_ability !== undefined) {
+    detectiveUsed = gameState.detective_used_ability;
+  }
+}
+
+// ─── Smart Device (player status / missions) ─────────────────
+function toggleSmartDevice(open) {
+  const panel = $('smart-device-panel');
+  if (!panel) return;
+  if (open === undefined) open = panel.classList.contains('hidden');
+  panel.classList.toggle('hidden', !open);
+}
+
+document.addEventListener('click', (e) => {
+  if (e.target && e.target.id === 'device-toggle-btn') {
+    toggleSmartDevice(true);
+  }
+  if (e.target && e.target.id === 'smart-device-close') {
+    toggleSmartDevice(false);
+  }
+});
+
+function renderSmartDevice() {
+  const panel = $('smart-device-panel');
+  if (!panel || !gameState) return;
+  // only show to human player
+  const me = (gameState.players || []).find(p => p.id === playerId);
+  if (!me) { panel.classList.add('hidden'); return; }
+  // Do not force-open the panel here; leave visibility to the toggle button
+
+  // PROFILE
+  const profileEl = $('sd-profile-content');
+  const roleMap = { fugo: '富豪', heimin: '平民', hinmin: '貧民' };
+  const profileBack = me.backstory || me._debug_backstory || '（設定なし）';
+  const profileHtml = `
+    <div class="sd-row"><strong>現在の階級:</strong> ${escHtml(roleMap[me.role] || me.role || '不明')}</div>
+    <div class="sd-row"><strong>現在の役職:</strong> ${escHtml(me.game_role || me.game_role || '—')}</div>
+    <div class="sd-row"><strong>プロフィール:</strong> ${escHtml(profileBack)}</div>
+  `;
+  profileEl.innerHTML = profileHtml;
+
+  // MAIN MISSION (faction goal)
+  const mainEl = $('sd-main-content');
+  let mainMission = '';
+  if (me.faction_goal) mainMission = me.faction_goal;
+  else if (gameState.faction_goals && gameState.faction_goals[me.role]) mainMission = gameState.faction_goals[me.role];
+  else {
+    // fallback per spec
+    if (me.role === 'heimin') mainMission = '会議で「貧民」と「富豪」の両方を排除する';
+    else if (me.role === 'fugo') mainMission = '夜の大富豪で誰よりも早く手札を0にする（上がる）';
+    else if (me.role === 'hinmin') mainMission = '大富豪パートで早く上がる、または革命を成立させる';
+    else mainMission = '陣営目標は未設定';
+  }
+  mainEl.innerHTML = `<div class="sd-row">${escHtml(mainMission)}</div>`;
+
+  // SECRET MISSION (true win)
+  const secretEl = $('sd-secret-content');
+  let secret = '';
+  if (me.true_win) secret = me.true_win.description || JSON.stringify(me.true_win);
+  else if (me._debug_true_win) secret = me._debug_true_win.description || JSON.stringify(me._debug_true_win);
+  else if (me.secret_mission) secret = me.secret_mission;
+  else secret = '（個人目標なし）';
+  secretEl.innerHTML = `<div class="sd-row">${escHtml(secret)}</div>`;
+
+  // Hints — use logic_state suggestions or global hints
+  const hintsContainer = $('sd-hints');
+  const hints = (gameState.logic_state && gameState.logic_state.suggestions) || gameState.hints || [];
+  if (!hints || hints.length === 0) {
+    hintsContainer.innerHTML = '<div class="sd-hint">（現在利用可能なヒントはありません）</div>';
+  } else {
+    hintsContainer.innerHTML = hints.map(h => `<div class="sd-hint">・ ${escHtml(h)}</div>`).join('');
+  }
+
+  // Tab switching
+  document.querySelectorAll('.sd-tab').forEach(tab => {
+    tab.onclick = () => {
+      document.querySelectorAll('.sd-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      const target = tab.dataset.tab;
+      document.querySelectorAll('.sd-panel').forEach(p => p.classList.remove('active'));
+      $(`sd-${target}`).classList.add('active');
+    };
+  });
 }
 
 function updateRevolutionBanner() {
@@ -306,8 +421,49 @@ function renderDayPhase() {
     renderAmnesiaClues();
   }
 
+  // CO buttons: show only in Lite mode during day
+  const coBtns = $('co-buttons');
+  if (coBtns) coBtns.classList.toggle('hidden', !isLite);
+
   updateIntroButton();
   updateChatLimit();
+  renderBoardSummary();
+}
+
+function renderBoardSummary() {
+  const ls = gameState && gameState.logic_state;
+  const panel = $('board-summary-panel');
+  if (!panel) return;
+  if (!ls || !gameState || gameState.game_mode !== 'lite') {
+    panel.classList.add('hidden');
+    return;
+  }
+  const hasContent = (ls.board_summaries && ls.board_summaries.length > 0)
+    || (ls.suggestions && ls.suggestions.length > 0);
+  if (!hasContent) {
+    panel.classList.add('hidden');
+    return;
+  }
+
+  panel.classList.remove('hidden');
+  $('board-summary-list').innerHTML = (ls.board_summaries || [])
+    .map(s => `<div class="board-summary-item">${escHtml(s)}</div>`).join('');
+  $('board-suggestions-list').innerHTML = (ls.suggestions || [])
+    .map(s => `<div class="board-suggestion-item">💡 ${escHtml(s)}</div>`).join('');
+
+  // Template buttons — clicking copies text to chat input
+  const btns = $('board-template-btns');
+  btns.innerHTML = '';
+  (ls.template_messages || []).forEach(tmpl => {
+    const btn = document.createElement('button');
+    btn.className = 'btn-template-msg';
+    btn.textContent = tmpl;
+    btn.onclick = () => {
+      const input = $('chat-input');
+      if (input) { input.value = tmpl; input.focus(); }
+    };
+    btns.appendChild(btn);
+  });
 }
 
 function updateChatLimit() {
@@ -432,6 +588,21 @@ $('goto-result-btn').addEventListener('click', async () => {
 $('chat-send-btn').addEventListener('click', sendChat);
 $('chat-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
 
+// CO declaration buttons (Lite mode)
+const _CO_MESSAGES = {
+  detective: '私が探偵COします！探偵です。',
+  heimin:    '私は平民です。平民COします。',
+  fugo:      '実は私が富豪です。富豪COします。',
+  hinmin:    '実は私が貧民です。貧民COします。',
+};
+document.querySelectorAll('.btn-co').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const role = btn.dataset.co;
+    const msg = _CO_MESSAGES[role];
+    if (msg) { $('chat-input').value = msg; sendChat(); }
+  });
+});
+
 // Intro button — Day 1 flavor action
 $('intro-btn').addEventListener('click', () => {
   if (introUsed) return;
@@ -477,6 +648,12 @@ async function sendChat() {
     const data = await res.json();
     gameState.chat_history = data.chat_history;
 
+    // Sync logic_state from response (Lite mode)
+    if (data.logic_state) {
+      gameState.logic_state = data.logic_state;
+      renderBoardSummary();
+    }
+
     // Hard mode: baton info
     if (data.npc_responses && gameState.game_mode !== 'lite') {
       data.npc_responses.forEach(r => {
@@ -484,15 +661,6 @@ async function sendChat() {
           lastBatonMap[r.npc_id] = { baton_target_id: r.baton_target_id, baton_action: r.baton_action };
         } else {
           delete lastBatonMap[r.npc_id];
-        }
-      });
-    }
-
-    // Lite mode: foreshadowing hints (store for later debug display)
-    if (data.npc_responses && gameState.game_mode === 'lite') {
-      data.npc_responses.forEach(r => {
-        if (r.foreshadowing) {
-          // Mark message in chat with foreshadowing badge (stored in debug_log via backend)
         }
       });
     }
@@ -697,6 +865,15 @@ function renderNightPhase() {
     situationBanner.classList.remove('hidden');
   } else {
     situationBanner.classList.add('hidden');
+  }
+
+  // v4: detective panel — shown at night start if player is detective and hasn't used ability
+  const detectivePanel = $('v4-detective-panel');
+  if (gameMode === 'lite' && myGameRole === 'detective' && !detectiveUsed) {
+    detectivePanel.classList.remove('hidden');
+    populateDetectiveTargetSelect();
+  } else {
+    detectivePanel.classList.add('hidden');
   }
 
   renderNightPlayersList();
@@ -1337,6 +1514,126 @@ $('debug-toggle-btn').addEventListener('click', () => {
   }
 });
 
+// ─── Auto Mode ────────────────────────────────────────────────
+$('auto-mode-btn').addEventListener('click', () => {
+  autoMode = !autoMode;
+  $('auto-mode-btn').classList.toggle('active', autoMode);
+  $('auto-mode-btn').textContent = autoMode ? '⚡ AUTO ON' : '⚡ AUTO';
+  if (autoMode && gameState && !gameState.game_over) {
+    if (gameState.phase === 'day') scheduleAutoDay();
+    else if (gameState.phase === 'night') scheduleAutoNight();
+  }
+});
+
+function scheduleAutoDay() {
+  if (!autoMode || autoRunning) return;
+  setTimeout(autoRunDay, 800);
+}
+function scheduleAutoNight() {
+  if (!autoMode || autoRunning) return;
+  setTimeout(autoRunNight, 600);
+}
+
+async function autoRunDay() {
+  if (!autoMode || autoRunning || !gameState || gameState.phase !== 'day' || gameState.game_over) return;
+  if (gameState.game_mode !== 'lite') return;  // day-auto is Lite only
+  autoRunning = true;
+  $('auto-mode-btn').textContent = '⚡ 進行中…';
+  try {
+    const res = await fetch(`${API}/api/game/lite/auto-day`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ game_id: gameId }),
+    });
+    if (!res.ok) {
+      console.error('autoRunDay: server error', res.status, await res.text());
+      return;
+    }
+    const data = await res.json();
+    gameState = data.state;
+    nightLog = [];  // reset for new night
+
+    // Merge chat log from server (append new entries)
+    if (data.chat_log && Array.isArray(data.chat_log)) {
+      gameState.chat_history = [...(gameState.chat_history || []), ...data.chat_log];
+    }
+    // Apply baton / npc response info if provided
+    if (data.npc_responses && Array.isArray(data.npc_responses)) {
+      data.npc_responses.forEach(r => {
+        if (r.baton_target_id) lastBatonMap[r.npc_id] = { baton_target_id: r.baton_target_id, baton_action: r.baton_action };
+        else delete lastBatonMap[r.npc_id];
+      });
+    }
+    // Update investigation notes / amnesia clues if present
+    if (data.investigation_notes) {
+      gameState.investigation_notes = data.investigation_notes;
+    }
+    if (data.amnesia_clues) {
+      const prevCount = (gameState.amnesia_clues || []).length;
+      gameState.amnesia_clues = data.amnesia_clues;
+      if (data.amnesia_clues.length > prevCount) $('amnesia-list').classList.remove('hidden');
+    }
+    // Update chat counters if server sent them
+    if (data.day_chat_count !== undefined) {
+      gameState.day_chat_count = data.day_chat_count;
+      gameState.day_chat_max = data.day_chat_max || gameState.day_chat_max || 5;
+    }
+    if (data.hanged_player) {
+      const hp = data.hanged_player;
+      const isMe = hp.id === playerId;
+      if (!isMe) {
+        nightLog.push({ type: 'special', text: `⚖ ${hp.name}が処刑されました（${roleLabel(hp.role)}）` });
+      }
+    }
+    if (data.night_situation) {
+      $('night-situation-text').textContent = data.night_situation;
+      $('night-situation-banner').classList.remove('hidden');
+    }
+    // Reset BEFORE renderAll so scheduleAutoNight() can set its timer
+    autoRunning = false;
+    $('auto-mode-btn').textContent = '⚡ AUTO ON';
+    renderAll();
+  } catch (e) {
+    console.error('autoRunDay error:', e);
+  } finally {
+    autoRunning = false;
+    $('auto-mode-btn').textContent = '⚡ AUTO ON';
+  }
+}
+
+async function autoRunNight() {
+  if (!autoMode || autoRunning || !gameState || gameState.phase !== 'night' || gameState.game_over) return;
+  // If it's an NPC's turn, the server handles it — just wait and retry
+  if (gameState.current_turn !== playerId) {
+    setTimeout(autoRunNight, 800);
+    return;
+  }
+  autoRunning = true;
+  try {
+    const res = await fetch(`${API}/api/game/auto-play`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ game_id: gameId }),
+    });
+    if (!res.ok) {
+      console.error('autoRunNight: server error', res.status, await res.text());
+      return;
+    }
+    const data = await res.json();
+    gameState = data.state;
+    if (data.npc_actions && data.npc_actions.length > 0) {
+      addNightLogEntries(data.npc_actions);
+    }
+    // Reset BEFORE renderAll so scheduleAutoDay/Night() can set its timer
+    autoRunning = false;
+    renderAll();
+  } catch (e) {
+    console.error('autoRunNight error:', e);
+  } finally {
+    autoRunning = false;
+  }
+}
+
 async function fetchAndApplyDebugState() {
   if (!gameId) return;
   try {
@@ -1825,6 +2122,63 @@ function showLiteCheatResult(data) {
     await completeCheatPhase();
   };
 }
+
+
+// ─── v4: Detective UI ─────────────────────────────────────────
+
+function populateDetectiveTargetSelect() {
+  const sel = $('detective-target-select');
+  sel.innerHTML = '';
+  const others = gameState.players.filter(p => p.id !== playerId && !p.is_hanged);
+  others.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = p.name;
+    sel.appendChild(opt);
+  });
+}
+
+async function submitDetectiveInvestigate() {
+  const targetId = $('detective-target-select').value;
+  const infoType = document.querySelector('input[name="detective-info"]:checked').value;
+  if (!targetId) return;
+
+  $('detective-investigate-btn').disabled = true;
+  try {
+    const res = await fetch(`${API}/api/game/lite/detective-investigate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        game_id: gameId,
+        detective_id: playerId,
+        target_id: targetId,
+        info_type: infoType,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) { alert(data.detail || 'エラーが発生しました'); return; }
+
+    detectiveUsed = true;
+    const resultArea = $('detective-result-area');
+    resultArea.style.display = 'block';
+    resultArea.innerHTML = `<strong>🔍 調査結果（秘密）</strong><br>${escHtml(data.message)}`;
+    $('detective-investigate-btn').disabled = true;
+    $('detective-skip-btn').textContent = '閉じる';
+  } catch (e) {
+    console.error(e);
+    alert('エラー: ' + e.message);
+    $('detective-investigate-btn').disabled = false;
+  }
+}
+
+$('detective-investigate-btn').addEventListener('click', submitDetectiveInvestigate);
+$('detective-skip-btn').addEventListener('click', () => {
+  $('v4-detective-panel').classList.add('hidden');
+  // If ability not yet used, mark it as skipped for this session (won't prompt again until page reload)
+  if (!detectiveUsed) {
+    detectiveUsed = true;
+  }
+});
 
 // ─── Init ────────────────────────────────────────────────────
 showScreen('setup');

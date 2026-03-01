@@ -9,6 +9,19 @@ class Role(str, Enum):
     HINMIN = "hinmin"   # 貧民 (Poor)
 
 
+class GameRole(str, Enum):
+    NONE       = "none"
+    DETECTIVE  = "detective"   # 探偵: 夜に1人の階級orカードを調査
+    ACCOMPLICE = "accomplice"  # 共犯者: 富豪/貧民勝利で自分も勝利
+
+
+class NPCPersonality(str, Enum):
+    LOGICAL   = "logical"    # Trust優先（証拠ベースで糾弾）
+    EMOTIONAL = "emotional"  # Affinity優先（感情で攻撃/庇う）
+    COWARDLY  = "cowardly"   # 多数派追従（生存優先）
+    DESTROYER = "destroyer"  # 自分への反抗者を優先攻撃
+
+
 class CharacterState(int, Enum):
     NOT_EXIST = 0          # 存在しない
     DEAD = 1               # 亡き者
@@ -154,6 +167,8 @@ class Character(BaseModel):
     state: int = Field(default=2)  # CharacterState コード (0-9)
     argument_style: str = ""      # 慎重派/扇動者/論理派/便乗派/狂信者
     true_win: Optional["TrueWinCondition"] = None  # 真の勝利条件
+    game_role: Optional["GameRole"] = None  # v4: 探偵/共犯者/なし (None = GameRole.NONE)
+    npc_personality: Optional["NPCPersonality"] = None  # v4: AI行動パターン
 
     def hand_count(self) -> int:
         return len(self.hand)
@@ -172,6 +187,27 @@ class ChatMessage(BaseModel):
 class VoteRecord(BaseModel):
     voter_id: str
     target_id: str
+
+
+class GameFact(BaseModel):
+    """Logged game event used for logic calculations."""
+    fact_type: Literal["role_co", "card_play_strong", "cheat_exposed"]
+    actor_id: str
+    actor_name: str
+    turn: int        # day_number at time of event
+    data: dict       # {"claimed_role": "detective"} | {"max_strength": 15, "card_display": "🃏"} | {}
+
+
+class LogicState(BaseModel):
+    """Computed logic state from facts — updated after each chat exchange."""
+    detective_co_list: List[str] = []        # player IDs who claimed detective
+    confirmed_whites: List[str] = []         # IDs with no opposing CO (safe candidates)
+    action_contradictions: List[dict] = []   # [{actor_id, actor_name, card_display, reason}]
+    active_tactics: List[str] = []           # e.g. ["roller_detective", "action_contradiction"]
+    # UI-facing
+    board_summaries: List[str] = []          # ⚠️/💡/🚨 human-readable state strings
+    suggestions: List[str] = []             # theory advice strings
+    template_messages: List[str] = []        # quick-send button texts
 
 
 class GameState(BaseModel):
@@ -207,6 +243,15 @@ class GameState(BaseModel):
     game_mode: Literal["hard", "lite"] = "hard"  # ゲームモード
     # Lite mode: 陽動イカサマシステム
     lite_pending_decoy: Optional["LitePendingDecoy"] = None  # 陽動イカサマ待機中（防御者向け）
+    # v4: Trust/Affinity matrices [observer_id][target_id] = 0-100
+    trust_matrix:   Dict[str, Dict[str, int]] = Field(default_factory=dict)
+    affinity_matrix: Dict[str, Dict[str, int]] = Field(default_factory=dict)
+    # v4: Detective ability state
+    detective_used_ability: bool = False
+    detective_result: Optional[dict] = None  # {target_id, info_type, value} — detective player only
+    # v4.1: Logic State Manager
+    facts: List[GameFact] = Field(default_factory=list)
+    logic_state: LogicState = Field(default_factory=LogicState)
 
     def get_player(self, player_id: str) -> Optional[Character]:
         for p in self.players:
@@ -344,3 +389,13 @@ class LiteCheatReactRequest(BaseModel):
     game_id: str
     defender_id: str = "player_human"
     reaction: str = ""  # 最大15文字のリアクション
+
+
+# ─── v4 Role Ability models ───────────────────────────────────────────
+
+class DetectiveInvestigateRequest(BaseModel):
+    """Detective investigates one player at night start."""
+    game_id: str
+    detective_id: str = "player_human"
+    target_id: str
+    info_type: Literal["class", "strongest_card"]  # プレイヤーが選択

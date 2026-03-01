@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 load_dotenv()
 
 from ai_service import (
+    decide_npc_play,
     decide_npc_vote,
     detect_investigation_facts,
     generate_amnesia_clue,
@@ -34,17 +35,23 @@ from ai_service import (
     generate_lite_npc_speeches,
     decide_npc_lite_vote,
     judge_lite_cheat_decoy,
+    # v4
+    generate_detective_result,
 )
 from game_engine import (
     apply_cheat_effect,
     apply_pass,
     apply_play,
     assign_roles_lite,
+    assign_detective_role_lite,
     check_revolution_victory,
+    compute_logic_state,
     execute_hanging,
     init_relationship_matrix,
     initialize_game,
     check_victory,
+    log_card_play_facts,
+    log_role_co_fact,
     tally_votes,
     transition_to_day,
     transition_to_night,
@@ -60,9 +67,11 @@ from models import (
     CheatDefendRequest,
     CheatEffectType,
     CheatInitiateRequest,
+    DetectiveInvestigateRequest,
     FinalizeVoteResponse,
     GameIdRequest,
     GameIdWithPlayerRequest,
+    GameRole,
     GameState,
     LiteCheatDecoyRequest,
     LiteCheatReactRequest,
@@ -144,6 +153,18 @@ def _state_to_dict(
         pdata["skip_next_turn"] = p.skip_next_turn
         pdata["argument_style"] = p.argument_style
         pdata["true_win"] = p.true_win.model_dump() if p.true_win else None
+
+        # game_role: show to self or god-eye mode only (secret role)
+        if is_self or include_hidden:
+            pdata["game_role"] = p.game_role.value if p.game_role else "none"
+        else:
+            pdata["game_role"] = None
+
+        # detective_result: only reveal to the detective themselves
+        if is_self and p.game_role == GameRole.DETECTIVE:
+            pdata["detective_result"] = state.detective_result
+        else:
+            pdata["detective_result"] = None
 
         # Show backstory and relationships for self or in hidden mode
         if is_self or include_hidden:
@@ -236,6 +257,8 @@ def _state_to_dict(
             "target_id": state.lite_pending_decoy.target_id,
             "decoy_text": state.lite_pending_decoy.decoy_text,
         } if state.lite_pending_decoy else None,
+        "detective_used_ability": state.detective_used_ability,
+        "logic_state": state.logic_state.model_dump(),
     }
 
 
@@ -678,6 +701,8 @@ async def finalize_vote(request: GameIdRequest):
 
     # Transition to night phase
     state = transition_to_night(state)
+    # Record strong-card facts for logic state (Lite mode logic uses this)
+    log_card_play_facts(state)
 
     # Generate night situation flavor text
     try:
@@ -748,6 +773,8 @@ async def play_cards(request: PlayCardsRequest):
         state = check_victory(state)
         if not state.game_over:
             state = transition_to_day(state)
+            if state.game_mode == "lite":
+                state.logic_state = compute_logic_state(state)
 
     if state.game_over and state.victory_reason:
         state.debug_log.append({
@@ -796,6 +823,8 @@ async def pass_turn(request: PassRequest):
         state = check_victory(state)
         if not state.game_over:
             state = transition_to_day(state)
+            if state.game_mode == "lite":
+                state.logic_state = compute_logic_state(state)
 
     if state.game_over and state.victory_reason:
         state.debug_log.append({
@@ -1065,6 +1094,23 @@ async def start_game_lite(request: StartGameRequest):
                 type="first_out",
                 description="富豪と貧民を両方排除して生き残る",
             )
+        # Ensure each lite NPC also has a secret true_win (assign randomly if missing)
+        if not npc.true_win:
+            TRUE_WIN_TYPES = ["revenge_on", "protect", "climber", "martyr", "class_default"]
+            tw_type = random.choice(TRUE_WIN_TYPES)
+            target_id = None
+            if tw_type in ("revenge_on", "protect"):
+                # choose a target among NPCs or the human
+                choices = [c.id for c in npc_characters if c.id != npc.id] + ["player_human"]
+                target_id = random.choice(choices) if choices else None
+            npc.true_win = None
+            try:
+                npc.true_win = type(npc).model_fields.get('true_win') and npc.true_win
+            except Exception:
+                pass
+            # Fallback: set via pydantic model construction
+            from models import TrueWinCondition
+            npc.true_win = TrueWinCondition(type=tw_type, target_id=target_id, description=(f"ターゲット: {target_id}" if target_id else ""))
 
     role_desc = {
         Role.FUGO: "平民のフリをして潜伏し、貧民への疑惑を煽る",
@@ -1104,6 +1150,8 @@ async def start_game_lite(request: StartGameRequest):
     state.game_mode = "lite"
 
     state = init_relationship_matrix(state)
+    # v4: Assign detective role to one HEIMIN player
+    assign_detective_role_lite(state.players)
     state = update_all_character_states(state)
     game_store[state.game_id] = state
 
@@ -1150,6 +1198,19 @@ async def lite_chat(request: ChatRequest):
         turn=state.day_number,
     ))
 
+    # Parse human player CO from message keywords
+    _CO_KEYWORDS = {
+        "探偵": "detective",
+        "平民": "heimin",
+        "富豪": "fugo",
+        "貧民": "hinmin",
+    }
+    msg = request.message
+    for kw, role in _CO_KEYWORDS.items():
+        if kw in msg and ("CO" in msg or "です" in msg or "だ" in msg or "宣言" in msg):
+            log_role_co_fact(state, request.player_id, player_name, role)
+            break
+
     try:
         npc_responses = await generate_lite_npc_speeches(state, request.message)
     except Exception as e:
@@ -1172,6 +1233,9 @@ async def lite_chat(request: ChatRequest):
                 "turn": state.day_number,
             })
 
+    # Recompute logic state after this round of chat
+    state.logic_state = compute_logic_state(state)
+
     state.day_chat_count += 1
 
     return {
@@ -1182,6 +1246,7 @@ async def lite_chat(request: ChatRequest):
         "npc_responses": npc_responses,
         "day_chat_count": state.day_chat_count,
         "day_chat_max": 5,
+        "logic_state": state.logic_state.model_dump(),
     }
 
 
@@ -1333,6 +1398,47 @@ async def lite_cheat_react(request: LiteCheatReactRequest):
     }
 
 
+@app.post("/api/game/lite/detective-investigate")
+async def lite_detective_investigate(request: DetectiveInvestigateRequest):
+    """Lite mode: detective investigates one player at night start (1-time use)."""
+    state = game_store.get(request.game_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="ゲームが見つかりません")
+    if state.game_mode != "lite":
+        raise HTTPException(status_code=400, detail="Liteモードではありません")
+    if state.phase != "night":
+        raise HTTPException(status_code=400, detail="夜フェーズでのみ利用できます")
+
+    detective = state.get_player(request.detective_id)
+    if detective is None or detective.game_role != GameRole.DETECTIVE:
+        raise HTTPException(status_code=403, detail="あなたは探偵ではありません")
+    if state.detective_used_ability:
+        raise HTTPException(status_code=400, detail="探偵能力は1回しか使えません")
+
+    target = state.get_player(request.target_id)
+    if target is None or target.is_hanged:
+        raise HTTPException(status_code=400, detail="無効なターゲットです")
+
+    result = generate_detective_result(state, request.target_id, request.info_type)
+
+    state.detective_used_ability = True
+    state.detective_result = result
+
+    state.debug_log.append({
+        "type": "detective",
+        "actor": request.detective_id,
+        "actor_name": detective.name,
+        "reasoning": result.get("display", ""),
+        "detail": result,
+        "turn": state.day_number,
+    })
+
+    return {
+        "result": result,
+        "message": result.get("display", "調査完了"),
+    }
+
+
 @app.get("/api/game/list")
 async def list_games():
     """List all active games (debug endpoint)."""
@@ -1351,6 +1457,176 @@ async def delete_game(game_id: str):
         del game_store[game_id]
         return {"message": "ゲームを削除しました"}
     raise HTTPException(status_code=404, detail="ゲームが見つかりません")
+
+
+_AUTO_DAY_TRIGGERS = [
+    "では会議を始めましょう。昨夜の大富豪の結果を踏まえ、怪しい人物について話し合ってください。",
+    "探偵の方は名乗り出てください。また、証拠をもとに疑惑の人物を指摘してください。",
+    "投票の前に最後の発言をどうぞ。誰を処刑すべきか、理由とともに述べてください。",
+]
+
+
+@app.post("/api/game/lite/auto-day")
+async def lite_auto_day(request: GameIdRequest):
+    """Run the entire Lite day phase automatically — no player input needed."""
+    state = game_store.get(request.game_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="ゲームが見つかりません")
+    if state.game_mode != "lite":
+        raise HTTPException(status_code=400, detail="Liteモードのみ対応")
+    if state.phase != "day":
+        raise HTTPException(status_code=400, detail="昼フェーズでのみ実行できます")
+
+    all_chat = []
+
+    # Run 3 rounds of NPC-only discussion
+    for trigger in _AUTO_DAY_TRIGGERS:
+        state.chat_history.append(ChatMessage(
+            speaker_id="system", speaker_name="【進行】", text=trigger, turn=state.day_number,
+        ))
+        all_chat.append({"speaker_id": "system", "speaker_name": "【進行】", "text": trigger, "turn": state.day_number})
+
+        try:
+            npc_responses = await generate_lite_npc_speeches(state, trigger)
+        except Exception:
+            npc_responses = []
+
+        for resp in npc_responses:
+            state.chat_history.append(ChatMessage(
+                speaker_id=resp["npc_id"], speaker_name=resp["name"],
+                text=resp["text"], turn=state.day_number,
+            ))
+            all_chat.append({
+                "speaker_id": resp["npc_id"], "speaker_name": resp["name"],
+                "text": resp["text"], "turn": state.day_number,
+            })
+            if resp.get("reasoning") or resp.get("foreshadowing"):
+                state.debug_log.append({
+                    "type": "chat", "actor": resp["npc_id"], "actor_name": resp["name"],
+                    "reasoning": resp.get("reasoning", ""),
+                    "detail": {"text": resp["text"], "foreshadowing": resp.get("foreshadowing", "")},
+                    "turn": state.day_number,
+                })
+        state.day_chat_count += 1
+
+    state.logic_state = compute_logic_state(state)
+
+    # NPC voting
+    npcs = [p for p in state.alive_players() if not p.is_human]
+    npc_vote_info = []
+    for npc in npcs:
+        if npc.id not in state.votes:
+            try:
+                target_id, reasoning = await decide_npc_lite_vote(npc, state)
+                if target_id:
+                    state.votes[npc.id] = target_id
+                    update_relationship_for_vote(state, npc.id, target_id)
+                    target = state.get_player(target_id)
+                    npc_vote_info.append({
+                        "voter": npc.name,
+                        "target": target.name if target else target_id,
+                        "reasoning": reasoning,
+                    })
+            except Exception:
+                pass
+
+    # Tally and execute hanging
+    vote_counts = tally_votes(state.votes)
+    hanged_player_data = None
+    if vote_counts:
+        max_votes = max(vote_counts.values())
+        top_targets = [pid for pid, cnt in vote_counts.items() if cnt == max_votes]
+        hanged_id = random.choice(top_targets)
+        state = execute_hanging(state, hanged_id)
+        hanged = state.get_player(hanged_id)
+        if hanged:
+            hanged_player_data = {
+                "id": hanged.id, "name": hanged.name, "role": hanged.role.value,
+                "hand": [c.to_dict() for c in hanged.hand],
+                "victory_condition": hanged.victory_condition.description,
+            }
+
+    if state.game_over:
+        return {
+            "state": _state_to_dict(state, "player_human"),
+            "chat_log": all_chat, "vote_counts": vote_counts,
+            "hanged_player": hanged_player_data, "npc_vote_info": npc_vote_info,
+            "night_situation": "",
+        }
+
+    state = transition_to_night(state)
+    log_card_play_facts(state)
+    try:
+        state.night_situation = await generate_night_situation(state)
+    except Exception:
+        state.night_situation = ""
+
+    return {
+        "state": _state_to_dict(state, "player_human"),
+        "chat_log": all_chat, "vote_counts": vote_counts,
+        "hanged_player": hanged_player_data, "npc_vote_info": npc_vote_info,
+        "night_situation": state.night_situation,
+    }
+
+
+@app.post("/api/game/auto-play")
+async def auto_play_turn(request: GameIdRequest):
+    """Auto-play the human player's current night turn (treats them like an NPC)."""
+    state = game_store.get(request.game_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="ゲームが見つかりません")
+    if state.phase != "night":
+        raise HTTPException(status_code=400, detail="夜フェーズでのみ実行できます")
+
+    human = state.get_human_player()
+    if human is None:
+        raise HTTPException(status_code=400, detail="プレイヤーが見つかりません")
+
+    all_actions = []
+    msg = ""
+
+    if state.current_turn == human.id and not human.is_out() and not human.is_hanged:
+        cards, speech, reasoning = await decide_npc_play(human, state)
+        if cards:
+            state, msg = apply_play(state, human.id, cards)
+            if "革命" in msg and state.revolution_active:
+                state = check_revolution_victory(state)
+            all_actions.append({
+                "player_id": human.id, "name": human.name + "（オート）",
+                "action": "play", "message": msg,
+                "cards": [c.to_dict() for c in cards],
+                "speech": speech, "reasoning": reasoning,
+            })
+        else:
+            state, msg = apply_pass(state, human.id)
+            all_actions.append({
+                "player_id": human.id, "name": human.name + "（オート）",
+                "action": "pass", "message": msg,
+                "cards": [], "speech": "", "reasoning": reasoning,
+            })
+
+    # Run subsequent NPC turns (stops when it's human's turn again or night ends)
+    if not state.game_over and state.phase == "night":
+        state, npc_actions = await run_npc_turns(state)
+        _save_npc_play_reasoning(state, npc_actions)
+        all_actions.extend(npc_actions)
+
+    if state.phase == "day" and state.game_mode == "lite":
+        state.logic_state = compute_logic_state(state)
+
+    if state.game_over and state.victory_reason:
+        state.debug_log.append({
+            "type": "victory", "actor": "", "actor_name": "system",
+            "reasoning": state.victory_reason,
+            "detail": {"winner_ids": state.winner_ids},
+            "turn": state.day_number,
+        })
+
+    return {
+        "success": True, "message": msg,
+        "state": _state_to_dict(state, human.id),
+        "npc_actions": all_actions,
+    }
 
 
 if __name__ == "__main__":

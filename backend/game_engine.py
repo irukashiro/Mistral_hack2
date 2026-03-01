@@ -8,8 +8,8 @@ from typing import Dict, List, Optional, Tuple
 
 from models import (
     Card, Character, CharacterState, CheatEffect, CheatEffectType,
-    GameState, RelationshipValue, Role, Suit,
-    NUMBER_STRENGTH, SUIT_STRENGTH, ChatMessage
+    GameFact, GameRole, GameState, LogicState, NPCPersonality,
+    RelationshipValue, Role, Suit, NUMBER_STRENGTH, SUIT_STRENGTH, ChatMessage
 )
 
 
@@ -60,6 +60,44 @@ def assign_roles_lite(num_players: int = 5) -> List[Role]:
         roles.append(Role.HEIMIN)
     random.shuffle(roles)
     return roles
+
+
+def assign_detective_role_lite(characters: List[Character]) -> None:
+    """Lite mode: assign DETECTIVE game_role to exactly one HEIMIN player (in-place).
+    The human player may also be assigned DETECTIVE if they are HEIMIN.
+    All others get GameRole.NONE.
+    """
+    heimin_all = [c for c in characters if c.role == Role.HEIMIN]
+
+    # Reset all
+    for c in characters:
+        c.game_role = GameRole.NONE
+
+    if heimin_all:
+        detective = random.choice(heimin_all)
+        detective.game_role = GameRole.DETECTIVE
+
+
+def assign_classes_and_roles_v4(num_players: int = 5) -> Tuple[List[Role], List[GameRole]]:
+    """v4 Lite mode: assign daifugo classes AND game roles together.
+    Classes: 1 FUGO, 1 HINMIN, rest HEIMIN.
+    Roles:   FUGO/HINMIN always NONE; HEIMIN get 1 DETECTIVE + 1 ACCOMPLICE + rest NONE.
+    Returns: (class_list, game_role_list) shuffled as matched pairs.
+    """
+    heimin_count = num_players - 2
+    # Build (class, game_role) pairs
+    pairs = [
+        (Role.FUGO, GameRole.NONE),
+        (Role.HINMIN, GameRole.NONE),
+        (Role.HEIMIN, GameRole.DETECTIVE),
+        (Role.HEIMIN, GameRole.ACCOMPLICE),
+    ]
+    while len(pairs) < num_players:
+        pairs.append((Role.HEIMIN, GameRole.NONE))
+    random.shuffle(pairs)
+    classes = [p[0] for p in pairs]
+    game_roles = [p[1] for p in pairs]
+    return classes, game_roles
 
 
 # ─────────────────────────────────────────────
@@ -286,8 +324,13 @@ def apply_pass(state: GameState, player_id: str) -> Tuple[GameState, str]:
 
     msg = f"{player.name}がパスしました"
 
-    # If everyone still playing has passed, clear the table
-    if state.consecutive_passes >= len(active):
+    # Standard Daifugo: the round ends when everyone EXCEPT the player who last
+    # played has passed — that player should not have to pass their own play.
+    # Fix: use len(active)-1 as threshold when last_played_by is still active.
+    last_in_active = bool(state.last_played_by and state.last_played_by in active)
+    threshold = max(1, len(active) - (1 if last_in_active else 0))
+
+    if state.consecutive_passes >= threshold:
         state.table = []
         state.last_played_by = None
         state.consecutive_passes = 0
@@ -813,3 +856,210 @@ def is_friend(state: GameState, a_id: str, b_id: str) -> bool:
     if a_id in matrix and b_id in matrix[a_id]:
         return matrix[a_id][b_id] >= RelationshipValue.FRIENDLY
     return False
+
+
+# ─────────────────────────────────────────────
+# v4: Trust / Affinity matrix
+# ─────────────────────────────────────────────
+
+def init_trust_affinity(state: GameState) -> GameState:
+    """Initialize trust and affinity matrices — all pairs start at 50."""
+    ids = [p.id for p in state.players]
+    state.trust_matrix   = {pid: {oid: 50 for oid in ids if oid != pid} for pid in ids}
+    state.affinity_matrix = {pid: {oid: 50 for oid in ids if oid != pid} for pid in ids}
+    return state
+
+
+def update_trust(state: GameState, observer_id: str, target_id: str, delta: int) -> GameState:
+    """Update trust score (clamp 0-100)."""
+    m = state.trust_matrix
+    if observer_id in m and target_id in m.get(observer_id, {}):
+        m[observer_id][target_id] = max(0, min(100, m[observer_id][target_id] + delta))
+    return state
+
+
+def update_affinity(state: GameState, observer_id: str, target_id: str, delta: int) -> GameState:
+    """Update affinity score (clamp 0-100)."""
+    m = state.affinity_matrix
+    if observer_id in m and target_id in m.get(observer_id, {}):
+        m[observer_id][target_id] = max(0, min(100, m[observer_id][target_id] + delta))
+    return state
+
+
+def get_top_affinity_target(state: GameState, npc_id: str, candidates: List[str]) -> Optional[str]:
+    """Return the candidate that npc_id has the highest affinity for."""
+    row = state.affinity_matrix.get(npc_id, {})
+    scored = {cid: row.get(cid, 50) for cid in candidates}
+    return max(scored, key=scored.get) if scored else None
+
+
+def get_most_suspected_player(state: GameState, npc_id: str, candidates: List[str]) -> Optional[str]:
+    """Return the candidate that npc_id trusts the least."""
+    row = state.trust_matrix.get(npc_id, {})
+    scored = {cid: row.get(cid, 50) for cid in candidates}
+    return min(scored, key=scored.get) if scored else None
+
+
+# ─────────────────────────────────────────────
+# v4.1: Logic State Manager
+# ─────────────────────────────────────────────
+
+def log_role_co_fact(state: GameState, actor_id: str, actor_name: str, claimed_role: str) -> None:
+    """Record a role claim (CO) as a fact. Deduplicates per actor per role per day."""
+    existing = [
+        f for f in state.facts
+        if f.fact_type == "role_co"
+        and f.actor_id == actor_id
+        and f.data.get("claimed_role") == claimed_role
+        and f.turn == state.day_number
+    ]
+    if not existing:
+        state.facts.append(GameFact(
+            fact_type="role_co",
+            actor_id=actor_id,
+            actor_name=actor_name,
+            turn=state.day_number,
+            data={"claimed_role": claimed_role},
+        ))
+
+
+def log_card_play_facts(state: GameState) -> None:
+    """After night ends, record any player who played strength≥15 (2/Joker)."""
+    for p in state.players:
+        if not p.cards_played_history:
+            continue
+        all_played = [card for turn_cards in p.cards_played_history for card in turn_cards]
+        strong = [c for c in all_played if c.strength >= 15]
+        if strong:
+            best = max(strong, key=lambda c: c.strength)
+            existing = [f for f in state.facts
+                        if f.fact_type == "card_play_strong" and f.actor_id == p.id]
+            if not existing:
+                state.facts.append(GameFact(
+                    fact_type="card_play_strong",
+                    actor_id=p.id,
+                    actor_name=p.name,
+                    turn=state.day_number,
+                    data={"max_strength": best.strength, "card_display": best.display()},
+                ))
+
+
+def compute_logic_state(state: GameState) -> LogicState:
+    """Pure function: build LogicState from all accumulated facts + cheat_log."""
+    ls = LogicState()
+
+    # ① Detective CO → Roller or Confirmed White
+    detective_co_facts = [
+        f for f in state.facts
+        if f.fact_type == "role_co" and f.data.get("claimed_role") == "detective"
+    ]
+    detective_co_ids = list({f.actor_id for f in detective_co_facts})
+    ls.detective_co_list = detective_co_ids
+
+    if len(detective_co_ids) >= 2:
+        ls.active_tactics.append("roller_detective")
+        names = " と ".join(
+            state.get_player(pid).name for pid in detective_co_ids
+            if state.get_player(pid)
+        )
+        ls.board_summaries.append(
+            f"⚠️ 対抗発生：{names} が探偵をCOしています。どちらかが偽物です！"
+        )
+        ls.suggestions.append("両方を日を分けて吊る『ローラー作戦』が有効です")
+        first = next((state.get_player(pid) for pid in detective_co_ids if state.get_player(pid)), None)
+        if first:
+            ls.template_messages.append(f"{names}をローラーしよう")
+    elif len(detective_co_ids) == 1:
+        ls.confirmed_whites.append(detective_co_ids[0])
+        ls.active_tactics.append("confirmed_white")
+        p = state.get_player(detective_co_ids[0])
+        name = p.name if p else "？"
+        ls.board_summaries.append(
+            f"💡 {name} が唯一の探偵COです。対抗なし＝確定白の可能性が高いです"
+        )
+        ls.template_messages.append(f"{name}を信じて投票しよう")
+
+    # ② Action Contradiction: claimed heimin but played Joker/2
+    heimin_co_ids = {
+        f.actor_id for f in state.facts
+        if f.fact_type == "role_co" and f.data.get("claimed_role") == "heimin"
+    }
+    strong_play_facts = {
+        f.actor_id: f for f in state.facts if f.fact_type == "card_play_strong"
+    }
+    for pid in heimin_co_ids:
+        if pid in strong_play_facts:
+            sf = strong_play_facts[pid]
+            p = state.get_player(pid)
+            pname = p.name if p else sf.actor_name
+            contradiction = {
+                "actor_id": pid,
+                "actor_name": pname,
+                "card_display": sf.data.get("card_display", "？"),
+                "reason": f"平民を主張しているが【{sf.data.get('card_display', '？')}】を出した",
+            }
+            ls.action_contradictions.append(contradiction)
+            if "action_contradiction" not in ls.active_tactics:
+                ls.active_tactics.append("action_contradiction")
+            ls.board_summaries.append(
+                f"⚠️ 矛盾：{pname} は平民と主張しているが "
+                f"【{sf.data.get('card_display', '？')}】を出しました！"
+            )
+            ls.template_messages.append(f"{pname}は本当に平民なのか？")
+
+    # ③ Cheat Exposed
+    exposed_ids = {e.cheater_id for e in state.cheat_log if e.judgment == "big_fail"}
+    for eid in exposed_ids:
+        p = state.get_player(eid)
+        if p:
+            ls.board_summaries.append(f"🚨 {p.name} のイカサマが露見しています！信頼できません")
+            ls.template_messages.append(f"{p.name}を吊るべきだ")
+
+    # ④ Line reasoning: detective investigation result × CO claims cross-check
+    if state.detective_result:
+        dr = state.detective_result
+        inv_target_id = dr.get("target_id")
+        info_type = dr.get("info_type")
+        inv_value = dr.get("value")
+
+        if inv_target_id and info_type == "class":
+            # Build map: actor_id → claimed_role (last CO wins)
+            co_role_map: Dict[str, str] = {}
+            for f in state.facts:
+                if f.fact_type == "role_co":
+                    co_role_map[f.actor_id] = f.data.get("claimed_role", "")
+
+            claimed = co_role_map.get(inv_target_id)
+            target = state.get_player(inv_target_id)
+
+            if target and claimed:
+                role_ja = {"fugo": "富豪", "hinmin": "貧民", "heimin": "平民"}.get(inv_value, inv_value)
+
+                if claimed == "detective" and inv_value in ("fugo", "hinmin"):
+                    # Fake detective caught by investigation
+                    ls.board_summaries.append(
+                        f"🔍 偽探偵発覚：{target.name} は探偵COしているが調査で{role_ja}と判明！"
+                    )
+                    ls.template_messages.append(f"{target.name}は偽探偵だ！吊るべきだ")
+                    if "fake_detective_exposed" not in ls.active_tactics:
+                        ls.active_tactics.append("fake_detective_exposed")
+
+                elif claimed == "heimin" and inv_value in ("fugo", "hinmin"):
+                    # Claimed heimin but is actually fugo/hinmin
+                    ls.board_summaries.append(
+                        f"🔍 ライン考察：{target.name} は平民COしているが調査で{role_ja}と判明！"
+                    )
+                    ls.template_messages.append(f"{target.name}は嘘をついている！")
+                    if "line_contradiction" not in ls.active_tactics:
+                        ls.active_tactics.append("line_contradiction")
+
+                elif claimed == "detective" and inv_value == "heimin":
+                    # Investigated detective CO and confirmed as heimin → supports their claim
+                    if inv_target_id not in ls.confirmed_whites:
+                        ls.confirmed_whites.append(inv_target_id)
+                    ls.board_summaries.append(
+                        f"🔍 調査確認：{target.name} は調査で平民と判明。探偵COに信憑性あり。"
+                    )
+                    ls.suggestions.append(f"{target.name} の探偵COは信頼できる可能性が高い")
+
+    return ls

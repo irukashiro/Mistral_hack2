@@ -64,7 +64,10 @@
       <div class="header-right">
         <span class="header-role-label">あなたの役割:</span>
         <span class="header-role" id="header-role">—</span>
+        <span id="header-game-role" class="game-role-badge" style="display:none;"></span>
         <span class="header-cards" id="header-cards">手札: 0枚</span>
+        <button id="auto-mode-btn" class="btn-auto-mode" title="オートモード（プレイヤー入力なしで自動進行）">⚡ AUTO</button>
+        <button id="device-toggle-btn" class="btn-secondary" title="スマート端末">📱 端末</button>
         <button id="goto-result-btn" class="btn-goto-result" title="リザルトを見る">📋 リザルト</button>
         <button id="debug-toggle-btn" class="btn-debug-toggle" title="神の目モード">👁</button>
       </div>
@@ -105,6 +108,14 @@
               <button id="chat-send-btn" class="btn-secondary">送信</button>
             </div>
             <div id="chat-limit-info" class="chat-limit-info">残り <span id="chat-remaining">5</span> 回</div>
+            <!-- v4.1: CO Declaration buttons (Lite mode only) -->
+            <div id="co-buttons" class="co-buttons hidden">
+              <span class="co-label">役職CO：</span>
+              <button class="btn-co" data-co="detective">探偵CO</button>
+              <button class="btn-co" data-co="heimin">平民CO</button>
+              <button class="btn-co" data-co="fugo">富豪CO</button>
+              <button class="btn-co" data-co="hinmin">貧民CO</button>
+            </div>
             <button id="intro-btn" class="btn-intro hidden">🎭 みんな、自己紹介してください</button>
             <button id="hints-toggle-btn" class="btn-secondary hints-toggle-btn">💡 ヒント表示</button>
             <div id="hints-panel" class="hints-panel hidden">
@@ -125,6 +136,14 @@
               <div id="amnesia-list" class="amnesia-list hidden"></div>
             </div>
           </section>
+
+          <!-- v4.1: Logic Board Summary -->
+          <div id="board-summary-panel" class="board-summary-panel hidden">
+            <div class="board-summary-header">📊 盤面サマリー</div>
+            <div id="board-summary-list" class="board-summary-list"></div>
+            <div id="board-suggestions-list" class="board-suggestions-list"></div>
+            <div id="board-template-btns" class="board-template-btns"></div>
+          </div>
 
           <!-- Vote Panel -->
           <aside class="vote-panel">
@@ -190,6 +209,26 @@
         </div>
 
         <!-- ===== LITE MODE CHEAT PANELS ===== -->
+
+        <!-- v4: Detective panel (Lite mode, detective player only) -->
+        <div id="v4-detective-panel" class="cheat-overlay hidden">
+          <div class="cheat-box lite-cheat-box">
+            <h3 class="cheat-title">🔍 探偵の調査</h3>
+            <p class="cheat-desc">夜の開始時に1人を密かに調査できます。（1回のみ）</p>
+            <div class="cheat-label">調査対象</div>
+            <select id="detective-target-select" class="cheat-select"></select>
+            <div class="cheat-label" style="margin-top:8px;">調査内容</div>
+            <div class="detective-radio-group">
+              <label><input type="radio" name="detective-info" value="class" checked> 階級を調べる</label>
+              <label><input type="radio" name="detective-info" value="strongest_card"> 最強カードを調べる</label>
+            </div>
+            <div class="cheat-actions">
+              <button id="detective-investigate-btn" class="btn-primary">調査する</button>
+              <button id="detective-skip-btn" class="btn-secondary">スキップ</button>
+            </div>
+            <div id="detective-result-area" class="detective-result-area" style="display:none;"></div>
+          </div>
+        </div>
 
         <!-- Lite: Cheater inputs Decoy + Real -->
         <div id="lite-cheat-decoy-panel" class="cheat-overlay hidden">
@@ -316,6 +355,34 @@
       <div class="debug-section">
         <div class="debug-section-label">AIログ</div>
         <div id="debug-ai-log-inline" class="debug-ai-log-inline"></div>
+      </div>
+    </aside>
+
+    <!-- Smart Device (Player status book) -->
+    <aside id="smart-device-panel" class="smart-device-panel hidden">
+      <div class="smart-device-header">
+        <span class="smart-device-title">📱 スマート端末</span>
+        <button id="smart-device-close" class="smart-device-close">✕</button>
+      </div>
+      <div class="smart-device-tabs">
+        <button data-tab="profile" class="sd-tab active">PROFILE</button>
+        <button data-tab="main" class="sd-tab">MAIN MISSION</button>
+        <button data-tab="secret" class="sd-tab">SECRET MISSION</button>
+      </div>
+      <div class="smart-device-body">
+        <div id="sd-profile" class="sd-panel active">
+          <div id="sd-profile-content">読み込み中...</div>
+        </div>
+        <div id="sd-main" class="sd-panel">
+          <div id="sd-main-content">読み込み中...</div>
+        </div>
+        <div id="sd-secret" class="sd-panel">
+          <div id="sd-secret-content">読み込み中...</div>
+        </div>
+        <div class="sd-hint-row">
+          <h4>ヒント</h4>
+          <div id="sd-hints" class="sd-hints">—</div>
+        </div>
       </div>
     </aside>
 
