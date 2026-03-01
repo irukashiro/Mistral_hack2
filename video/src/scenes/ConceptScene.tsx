@@ -3,145 +3,63 @@ import { interpolate, useCurrentFrame } from "remotion";
 import { COLORS } from "../theme";
 import { FadeIn } from "../components/GoldText";
 
-// 8–24s (240–720 frames) — localFrame
+// 5–17s (150–510 frames) — localFrame  SETTING.md v2.0
 export const ConceptScene: React.FC = () => {
   const frame = useCurrentFrame();
-
   const pillars = [
-    {
-      en: "CARD GAME",
-      ja: "大富豪",
-      icon: "🃏",
-      bullets: ["54-card deck with Jokers", "革命・8切り・シーケンス", "イカサマで格差を逆転"],
-      color: COLORS.gold,
-      delay: 18,
-    },
-    {
-      en: "SOCIAL DEDUCTION",
-      ja: "人狼",
-      icon: "🐺",
-      bullets: ["Discuss, Vote, Execute", "昼の議論で仲間を疑え", "NPCは自律的に動く"],
-      color: "#d07040",
-      delay: 38,
-    },
-    {
-      en: "GENERATIVE AI",
-      ja: "Mistral AI",
-      icon: "✦",
-      bullets: ["Unique world every play", "AIがキャラ・世界を生成", "手口と対策もAIが裁く"],
-      color: "#6090e0",
-      delay: 58,
-    },
+    { en: "CARD GAME", ja: "大富豪", icon: "🃏",
+      desc: "54枚デッキ・革命・8切り\nイカサマで格差を逆転", color: COLORS.gold, delay: 20 },
+    { en: "SOCIAL DEDUCTION", ja: "人狼ゲーム", icon: "🐺",
+      desc: "Discuss → Vote → Execute\n誰が危険人物かを告発", color: "#d07040", delay: 36 },
+    { en: "GENERATIVE AI", ja: "AI生成", icon: "✦",
+      desc: "World, chars & cheat judged\nプレイごとに完全異なる体験", color: "#6090e0", delay: 52 },
   ];
-
   return (
-    <div
-      style={{
-        width: "100%",
-        height: "100%",
-        background: COLORS.bg,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        fontFamily: '"Noto Sans JP", sans-serif',
-        padding: "0 56px",
-        boxSizing: "border-box",
-      }}
-    >
-      <FadeIn delay={0} duration={16}>
-        <div style={{ textAlign: "center", marginBottom: 36 }}>
-          <div style={{ fontSize: 11, color: COLORS.goldDim, letterSpacing: 5, marginBottom: 8 }}>
-            CONCEPT
+    <div style={{
+      width: "100%", height: "100%", background: COLORS.bg,
+      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+      fontFamily: '"Noto Sans JP",sans-serif', padding: "0 52px", boxSizing: "border-box",
+    }}>
+      <FadeIn delay={0} duration={14}>
+        <div style={{ textAlign: "center", marginBottom: 28 }}>
+          <div style={{ fontSize: 10, color: COLORS.goldDim, letterSpacing: 5, marginBottom: 6 }}>CONCEPT — 世界観</div>
+          <div style={{ fontSize: 26, color: COLORS.white, fontWeight: 700 }}>
+            閉鎖空間に集められた5人が挑む<span style={{ color: COLORS.goldLight }}>デスゲーム</span>
           </div>
-          <div style={{ fontSize: 30, color: COLORS.white, fontWeight: 700, lineHeight: 1.4 }}>
-            3つの要素が融合した
-            <span style={{ color: COLORS.goldLight }}> 新感覚ゲーム</span>
-          </div>
-          <div style={{ fontSize: 14, color: COLORS.dimWhite, marginTop: 6 }}>
-            A card game, social deduction, and generative AI — fused into one.
+          <div style={{ fontSize: 13, color: COLORS.dimWhite, marginTop: 4 }}>
+            5 strangers. 3 factions. Hidden identities. One winner.
           </div>
         </div>
       </FadeIn>
-
-      <div style={{ display: "flex", gap: 24, width: "100%", justifyContent: "center" }}>
+      <div style={{ display: "flex", gap: 20, width: "100%", justifyContent: "center" }}>
         {pillars.map((p, i) => {
-          const progress = interpolate(frame, [p.delay, p.delay + 22], [0, 1], {
-            extrapolateLeft: "clamp",
-            extrapolateRight: "clamp",
-          });
+          const prog = interpolate(frame, [p.delay, p.delay + 18], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
           return (
-            <div
-              key={i}
-              style={{
-                flex: 1,
-                maxWidth: 300,
-                background: COLORS.panel,
-                border: `1px solid ${p.color}50`,
-                borderRadius: 14,
-                padding: "28px 22px",
-                opacity: progress,
-                transform: `translateY(${(1 - progress) * 28}px)`,
-                boxShadow: `0 0 28px ${p.color}18`,
-              }}
-            >
-              <div style={{ fontSize: 40, marginBottom: 10, textAlign: "center" }}>{p.icon}</div>
-              <div style={{ fontSize: 11, color: `${p.color}90`, letterSpacing: 4, textAlign: "center", marginBottom: 4 }}>
-                {p.en}
-              </div>
-              <div style={{ fontSize: 26, fontWeight: 900, color: p.color, textAlign: "center", marginBottom: 18 }}>
-                {p.ja}
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {p.bullets.map((b, j) => {
-                  const bp = interpolate(
-                    frame,
-                    [p.delay + 20 + j * 12, p.delay + 36 + j * 12],
-                    [0, 1],
-                    { extrapolateLeft: "clamp", extrapolateRight: "clamp" }
-                  );
-                  return (
-                    <div
-                      key={j}
-                      style={{ display: "flex", gap: 8, alignItems: "center", opacity: bp }}
-                    >
-                      <div
-                        style={{
-                          width: 4,
-                          height: 4,
-                          borderRadius: "50%",
-                          background: p.color,
-                          flexShrink: 0,
-                        }}
-                      />
-                      <span style={{ fontSize: 13, color: COLORS.dimWhite }}>{b}</span>
-                    </div>
-                  );
-                })}
-              </div>
+            <div key={i} style={{
+              flex: 1, maxWidth: 290, background: COLORS.panel,
+              border: `1px solid ${p.color}50`, borderRadius: 12, padding: "22px 18px",
+              opacity: prog, transform: `translateY(${(1 - prog) * 22}px)`,
+              boxShadow: `0 0 24px ${p.color}15`,
+            }}>
+              <div style={{ fontSize: 36, marginBottom: 8, textAlign: "center" }}>{p.icon}</div>
+              <div style={{ fontSize: 10, color: `${p.color}90`, letterSpacing: 3, textAlign: "center", marginBottom: 3 }}>{p.en}</div>
+              <div style={{ fontSize: 22, fontWeight: 900, color: p.color, textAlign: "center", marginBottom: 12 }}>{p.ja}</div>
+              <div style={{ fontSize: 13, color: COLORS.dimWhite, lineHeight: 1.75, whiteSpace: "pre-line", textAlign: "center" }}>{p.desc}</div>
             </div>
           );
         })}
       </div>
-
-      {/* AGENTS.md description — bottom */}
-      <FadeIn delay={100} duration={20}>
-        <div
-          style={{
-            marginTop: 28,
-            padding: "14px 24px",
-            background: "#0e0e14",
-            border: `1px solid ${COLORS.goldDim}40`,
-            borderRadius: 10,
-            fontSize: 14,
-            color: COLORS.dimWhite,
-            textAlign: "center",
-            lineHeight: 1.8,
-            maxWidth: 700,
-          }}
-        >
-          プレイヤーは<span style={{ color: COLORS.goldLight, fontWeight: 700 }}>記憶喪失の人物</span>として放り込まれ、
-          AIが生成したNPCたちを<span style={{ color: COLORS.goldLight, fontWeight: 700 }}>論理と感情</span>で説き伏せて勝利を目指す
+      <FadeIn delay={80} duration={16}>
+        <div style={{
+          marginTop: 22, padding: "12px 24px", background: "#0e0e14",
+          border: `1px solid ${COLORS.goldDim}40`, borderRadius: 10,
+          fontSize: 13, color: COLORS.dimWhite, textAlign: "center", lineHeight: 1.8, maxWidth: 660,
+        }}>
+          「運命の糸」ルール — <span style={{ color: COLORS.goldLight }}>全員が必ず最低1人と顔見知り</span>。
+          AIが秘密の因縁を自動生成。<br/>
+          <span style={{ color: `${COLORS.dimWhite}70`, fontSize: 11 }}>
+            Everyone shares a hidden connection — generated by AI each playthrough.
+          </span>
         </div>
       </FadeIn>
     </div>
