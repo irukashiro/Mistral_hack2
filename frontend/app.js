@@ -174,7 +174,7 @@ tryRestoreGame();
 
 async function startGame() {
   const playerName = $('player-name').value.trim() || 'プレイヤー';
-  const npcCount = parseInt($('npc-count').value, 10);
+  const npcCount = $('npc-count') ? parseInt($('npc-count').value, 10) : 4;
   const mode = $('game-mode').value || 'lite';
   gameMode = mode;
 
